@@ -125,6 +125,142 @@ mod metadata_tests {
 }
 
 #[cfg(test)]
+mod format_matrix_tests {
+    use std::sync::Arc;
+
+    use arrow_array::{Float64Array, Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType as ArrowDataType, Field, Schema};
+    use tempfile::tempdir;
+
+    use crate::{io, types::FileType};
+
+    fn sample_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", ArrowDataType::Int64, false),
+            Field::new("name", ArrowDataType::Utf8, false),
+            Field::new("score", ArrowDataType::Float64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["alice", "bob", "carol"])),
+                Arc::new(Float64Array::from(vec![1.5, 2.5, 3.5])),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn round_trip(file_type: FileType) {
+        let dir = tempdir().unwrap();
+        let path = dir
+            .path()
+            .join(format!("chunk0.{}", file_type.extension()));
+        let batch = sample_batch();
+        io::write_chunk(&path, std::slice::from_ref(&batch), &file_type).unwrap();
+        let batches = io::read_chunk(&path, &file_type).unwrap();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 3, "{file_type:?} row count");
+        assert_eq!(batches[0].num_columns(), 3, "{file_type:?} column count");
+    }
+
+    #[test]
+    fn round_trip_parquet() {
+        round_trip(FileType::Parquet);
+    }
+
+    #[test]
+    fn round_trip_csv() {
+        round_trip(FileType::Csv);
+    }
+
+    #[test]
+    fn round_trip_json() {
+        round_trip(FileType::Json);
+    }
+
+    #[test]
+    fn round_trip_orc() {
+        round_trip(FileType::Orc);
+    }
+
+    #[test]
+    fn round_trip_arrow_ipc() {
+        round_trip(FileType::ArrowIpc);
+    }
+
+    #[test]
+    fn empty_write_is_noop() {
+        let dir = tempdir().unwrap();
+        for ft in [
+            FileType::Parquet,
+            FileType::Csv,
+            FileType::Json,
+            FileType::Orc,
+            FileType::ArrowIpc,
+        ] {
+            let path = dir.path().join(format!("empty.{}", ft.extension()));
+            io::write_chunk(&path, &[], &ft).unwrap();
+            assert!(!path.exists(), "{ft:?} should not create a file for empty input");
+        }
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use std::sync::Arc;
+
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType as ArrowDataType, Field, Schema};
+    use tempfile::tempdir;
+
+    use crate::{storage::ChunkStore, types::FileType};
+
+    fn sample_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", ArrowDataType::Int64, false),
+            Field::new("name", ArrowDataType::Utf8, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![10, 20])),
+                Arc::new(StringArray::from(vec!["x", "y"])),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn chunk_store_local_round_trip_all_formats() {
+        let dir = tempdir().unwrap();
+        let store = ChunkStore::local(dir.path()).unwrap();
+        for ft in [
+            FileType::Parquet,
+            FileType::Csv,
+            FileType::Json,
+            FileType::Orc,
+            FileType::ArrowIpc,
+        ] {
+            let rel = format!("vertex/person/id/chunk0.{}", ft.extension());
+            store.write_chunk(&rel, &[sample_batch()], &ft).await.unwrap();
+            let batches = store.read_chunk(&rel, &ft).await.unwrap();
+            let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            assert_eq!(rows, 2, "{ft:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn chunk_store_raw_bytes() {
+        let dir = tempdir().unwrap();
+        let store = ChunkStore::local(dir.path()).unwrap();
+        store.put_bytes("meta/graph.yml", b"name: g".to_vec()).await.unwrap();
+        let bytes = store.get_bytes("meta/graph.yml").await.unwrap();
+        assert_eq!(&bytes[..], b"name: g");
+    }
+}
+
+#[cfg(test)]
 mod io_tests {
     use crate::{
         metadata::{Property, PropertyGroup, VertexInfo},
@@ -161,5 +297,45 @@ mod io_tests {
         let batches = reader.read_property_group(&group).unwrap();
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 25);
+    }
+
+    #[test]
+    fn merge_property_groups_round_trip() {
+        let dir = tempdir().unwrap();
+        let vi = VertexInfo::new("person", 10)
+            .with_property_group(PropertyGroup::new(
+                vec![Property::new("id", crate::types::DataType::Int64).primary()],
+                FileType::Parquet,
+            ))
+            .with_property_group(PropertyGroup::new(
+                vec![
+                    Property::new("name", crate::types::DataType::String),
+                    Property::new("age", crate::types::DataType::Int64),
+                ],
+                FileType::Parquet,
+            ));
+
+        let mut builder = VerticesBuilder::new(vi.clone(), dir.path());
+        for i in 0..25i64 {
+            builder.add_vertex(
+                Vertex::new()
+                    .add_property("id", PropertyValue::Int64(i))
+                    .add_property("name", PropertyValue::String(format!("person_{i}")))
+                    .add_property("age", PropertyValue::Int64(20 + i)),
+            );
+        }
+        builder.dump().unwrap();
+
+        let reader = VertexReader::new(vi, dir.path(), 25);
+        let merged = reader.read_merged().unwrap();
+        assert_eq!(merged.num_rows(), 25);
+        assert_eq!(merged.num_columns(), 3);
+        let names: Vec<_> = merged
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, vec!["id", "name", "age"]);
     }
 }

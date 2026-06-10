@@ -48,6 +48,7 @@ pub enum FileType {
     Orc,
     Csv,
     Json,
+    ArrowIpc,
 }
 
 impl FileType {
@@ -57,6 +58,7 @@ impl FileType {
             FileType::Orc => "orc",
             FileType::Csv => "csv",
             FileType::Json => "json",
+            FileType::ArrowIpc => "arrow",
         }
     }
 }

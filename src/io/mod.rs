@@ -1,5 +1,8 @@
 pub mod parquet;
 pub mod csv;
+pub mod json;
+pub mod ipc;
+pub mod orc;
 
 use std::path::Path;
 use arrow_array::RecordBatch;
@@ -10,9 +13,9 @@ pub fn read_chunk(path: impl AsRef<Path>, file_type: &FileType) -> Result<Vec<Re
     match file_type {
         FileType::Parquet => parquet::read(path),
         FileType::Csv => csv::read(path),
-        FileType::Json | FileType::Orc => Err(crate::error::GraphArError::UnsupportedFileType(
-            file_type.extension().to_string(),
-        )),
+        FileType::Json => json::read(path),
+        FileType::Orc => orc::read(path),
+        FileType::ArrowIpc => ipc::read(path),
     }
 }
 
@@ -27,8 +30,8 @@ pub fn write_chunk(
     match file_type {
         FileType::Parquet => parquet::write(path, batches),
         FileType::Csv => csv::write(path, batches),
-        FileType::Json | FileType::Orc => Err(crate::error::GraphArError::UnsupportedFileType(
-            file_type.extension().to_string(),
-        )),
+        FileType::Json => json::write(path, batches),
+        FileType::Orc => orc::write(path, batches),
+        FileType::ArrowIpc => ipc::write(path, batches),
     }
 }

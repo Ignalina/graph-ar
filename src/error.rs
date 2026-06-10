@@ -19,6 +19,12 @@ pub enum GraphArError {
     #[error("Parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
 
+    #[error("ORC error: {0}")]
+    Orc(#[from] orc_rust::error::OrcError),
+
+    #[error("Object store error: {0}")]
+    ObjectStore(#[from] object_store::Error),
+
     #[error("Vertex type '{0}' not found in graph")]
     VertexTypeNotFound(String),
 

@@ -56,6 +56,22 @@ impl VertexReader {
         io::read_chunk(&full, &group.file_type)
     }
 
+    /// Read every property group and merge them into one row-aligned batch
+    /// holding all columns of this vertex type.
+    pub fn read_merged(&self) -> Result<RecordBatch> {
+        let groups = self.info.property_groups.clone();
+        self.read_merged_groups(&groups)
+    }
+
+    /// Read the given property groups and merge them into one batch.
+    pub fn read_merged_groups(&self, groups: &[PropertyGroup]) -> Result<RecordBatch> {
+        let per_group: Result<Vec<_>> = groups
+            .iter()
+            .map(|g| self.read_property_group(g))
+            .collect();
+        crate::merge::merge_property_groups(&per_group?)
+    }
+
     /// Read chunks for the property group containing the named property.
     pub fn read_by_property(&self, property_name: &str) -> Result<Vec<RecordBatch>> {
         let group = self
