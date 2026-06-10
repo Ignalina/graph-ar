@@ -114,7 +114,7 @@ impl EdgesBuilder {
                 io::write_chunk(&path, &[batch], &file_type)?;
 
                 // Write property group chunks.
-                for group in self.info.property_groups.clone().iter() {
+                for group in self.info.property_groups.iter() {
                     let prop_batch = build_edge_prop_batch(edge_slice, group)?;
                     let prop_path = self.base_dir.join(self.info.property_chunk_path(
                         &self.adj_type,

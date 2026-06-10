@@ -70,7 +70,7 @@ impl VerticesBuilder {
         let mut chunk_index = 0u64;
 
         for chunk in self.vertices.chunks(chunk_size) {
-            for group in self.info.property_groups.clone().iter() {
+            for group in self.info.property_groups.iter() {
                 let batch = build_record_batch(chunk, group)?;
                 let rel = self.info.chunk_path(group, chunk_index);
                 let full = self.base_dir.join(&rel);
