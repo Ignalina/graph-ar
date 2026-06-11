@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufReader, Seek, SeekFrom},
+    io::{BufReader, BufWriter, Seek, SeekFrom, Write},
     path::Path,
     sync::Arc,
 };
@@ -27,9 +27,13 @@ pub fn write(path: impl AsRef<Path>, batches: &[RecordBatch]) -> Result<()> {
     if batches.is_empty() {
         return Ok(());
     }
-    let file = File::create(path)?;
+    let file = BufWriter::new(File::create(path)?);
     let mut writer = LineDelimitedWriter::new(file);
     writer.write_batches(&batches.iter().collect::<Vec<_>>())?;
     writer.finish()?;
+    // Flush the BufWriter explicitly so any error surfaces here rather than
+    // being swallowed on drop. `finish()` flushes the Arrow writer's own state;
+    // `into_inner().flush()` drains the BufWriter into the file.
+    writer.into_inner().flush()?;
     Ok(())
 }

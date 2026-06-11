@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path, sync::Arc};
+use std::{fs::File, io::BufWriter, path::Path, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_csv::{ReaderBuilder, WriterBuilder};
@@ -27,7 +27,7 @@ pub fn write(path: impl AsRef<Path>, batches: &[RecordBatch]) -> Result<()> {
     if batches.is_empty() {
         return Ok(());
     }
-    let file = File::create(path)?;
+    let file = BufWriter::new(File::create(path)?);
     let mut writer = WriterBuilder::new().with_header(true).build(file);
     for batch in batches {
         writer.write(batch)?;
