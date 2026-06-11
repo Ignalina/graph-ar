@@ -70,14 +70,20 @@ impl EdgesBuilder {
 
     /// Sort edges by the alignment key and flush as chunked files.
     pub fn dump(&mut self) -> Result<()> {
-        // Sort edges by the alignment vertex id.
-        if self.adj_type.aligned_by_src() {
-            self.edges.sort_unstable_by_key(|e| e.src);
-        } else {
-            self.edges.sort_unstable_by_key(|e| e.dst);
-        }
+        // Chunk membership tests the alignment id as a `u64` (see `key` below),
+        // so sort by that same `u64` key. For the only ids that ever land in a
+        // chunk — non-negative vertex ids in `[0, vertex_count)` — this orders
+        // identically to sorting by the raw `i64`; out-of-range ids (negatives,
+        // which cast to huge `u64`) are dropped either way, so the written
+        // output is unchanged. Keeping the sort key equal to the membership key
+        // is what lets the single advancing cursor below stay correct.
+        let aligned_by_src = self.adj_type.aligned_by_src();
+        let key = |e: &Edge| -> u64 {
+            if aligned_by_src { e.src as u64 } else { e.dst as u64 }
+        };
+        self.edges.sort_unstable_by_key(key);
 
-        let vchunk_size = if self.adj_type.aligned_by_src() {
+        let vchunk_size = if aligned_by_src {
             self.info.src_chunk_size
         } else {
             self.info.dst_chunk_size
@@ -90,19 +96,29 @@ impl EdgesBuilder {
             .map(|a| a.file_type.clone())
             .unwrap_or_default();
 
+        // The edges are now sorted ascending by the alignment key, and the
+        // vertex chunks below are visited with monotonically increasing
+        // `[v_start, v_end)` ranges. So a single cursor can walk the sorted Vec
+        // once, yielding the contiguous slice for each chunk in O(edges) total
+        // instead of re-scanning every edge per vertex chunk.
+        //
+        // The first chunk starts at key 0 and the cursor begins at the front.
+        // Edges whose key lands beyond the final chunk's `v_end`
+        // (>= vertex_count) are simply never reached and thus dropped, matching
+        // the original per-chunk filter.
+        let mut cursor = 0usize;
+
         for vc in 0..num_vertex_chunks {
             let v_start = vc * vchunk_size;
             let v_end = ((vc + 1) * vchunk_size).min(self.vertex_count);
 
-            // Edges belonging to this vertex chunk.
-            let chunk_edges: Vec<&Edge> = self
-                .edges
-                .iter()
-                .filter(|e| {
-                    let key = if self.adj_type.aligned_by_src() { e.src as u64 } else { e.dst as u64 };
-                    key >= v_start && key < v_end
-                })
-                .collect();
+            // Edges belonging to this vertex chunk: a contiguous run in the
+            // sorted Vec starting at `cursor`. Advance `cursor` to the first
+            // edge with `key >= v_end`.
+            debug_assert!(self.edges[cursor..].iter().all(|e| key(e) >= v_start));
+            let chunk_end = cursor + self.edges[cursor..].partition_point(|e| key(e) < v_end);
+            let chunk_edges: Vec<&Edge> = self.edges[cursor..chunk_end].iter().collect();
+            cursor = chunk_end;
 
             // Write adjacency list chunks.
             let edge_chunk_size = self.info.chunk_size as usize;
