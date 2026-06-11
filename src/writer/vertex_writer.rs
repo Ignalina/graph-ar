@@ -1,8 +1,10 @@
 use std::{collections::HashMap, path::{Path, PathBuf}, sync::Arc};
 
 use arrow_array::{
-    ArrayRef, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch,
-    StringArray,
+    ArrayRef, RecordBatch,
+    builder::{
+        BooleanBuilder, Float32Builder, Float64Builder, Int32Builder, Int64Builder, StringBuilder,
+    },
 };
 
 use crate::{
@@ -95,80 +97,86 @@ pub fn build_record_batch_for_edges(vertices: &[Vertex], group: &PropertyGroup) 
 
 fn build_record_batch(vertices: &[Vertex], group: &PropertyGroup) -> Result<RecordBatch> {
     let schema = group.arrow_schema();
-    let mut columns: Vec<ArrayRef> = Vec::new();
+    let rows = vertices.len();
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(group.properties.len());
 
     for prop in &group.properties {
+        // Resolve the property key once per column; each row only does the
+        // HashMap lookup, appending straight into the typed builder (no
+        // intermediate `Vec<Option<T>>`). A non-matching variant or a missing
+        // key both append a null, exactly as the old `Array::from` path did.
+        let name = prop.name.as_str();
         let col: ArrayRef = match &prop.data_type {
             DataType::Bool => {
-                let vals: Vec<Option<bool>> = vertices
-                    .iter()
-                    .map(|v| match v.get(&prop.name) {
-                        Some(PropertyValue::Bool(b)) => Some(*b),
-                        _ => None,
-                    })
-                    .collect();
-                Arc::new(BooleanArray::from(vals))
+                let mut b = BooleanBuilder::with_capacity(rows);
+                for v in vertices {
+                    match v.get(name) {
+                        Some(PropertyValue::Bool(x)) => b.append_value(*x),
+                        _ => b.append_null(),
+                    }
+                }
+                Arc::new(b.finish())
             }
             DataType::Int32 => {
-                let vals: Vec<Option<i32>> = vertices
-                    .iter()
-                    .map(|v| match v.get(&prop.name) {
-                        Some(PropertyValue::Int32(i)) => Some(*i),
-                        _ => None,
-                    })
-                    .collect();
-                Arc::new(Int32Array::from(vals))
+                let mut b = Int32Builder::with_capacity(rows);
+                for v in vertices {
+                    match v.get(name) {
+                        Some(PropertyValue::Int32(x)) => b.append_value(*x),
+                        _ => b.append_null(),
+                    }
+                }
+                Arc::new(b.finish())
             }
             DataType::Int64 => {
-                let vals: Vec<Option<i64>> = vertices
-                    .iter()
-                    .map(|v| match v.get(&prop.name) {
-                        Some(PropertyValue::Int64(i)) => Some(*i),
-                        _ => None,
-                    })
-                    .collect();
-                Arc::new(Int64Array::from(vals))
+                let mut b = Int64Builder::with_capacity(rows);
+                for v in vertices {
+                    match v.get(name) {
+                        Some(PropertyValue::Int64(x)) => b.append_value(*x),
+                        _ => b.append_null(),
+                    }
+                }
+                Arc::new(b.finish())
             }
             DataType::Float => {
-                let vals: Vec<Option<f32>> = vertices
-                    .iter()
-                    .map(|v| match v.get(&prop.name) {
-                        Some(PropertyValue::Float(f)) => Some(*f),
-                        _ => None,
-                    })
-                    .collect();
-                Arc::new(Float32Array::from(vals))
+                let mut b = Float32Builder::with_capacity(rows);
+                for v in vertices {
+                    match v.get(name) {
+                        Some(PropertyValue::Float(x)) => b.append_value(*x),
+                        _ => b.append_null(),
+                    }
+                }
+                Arc::new(b.finish())
             }
             DataType::Double => {
-                let vals: Vec<Option<f64>> = vertices
-                    .iter()
-                    .map(|v| match v.get(&prop.name) {
-                        Some(PropertyValue::Double(d)) => Some(*d),
-                        _ => None,
-                    })
-                    .collect();
-                Arc::new(Float64Array::from(vals))
+                let mut b = Float64Builder::with_capacity(rows);
+                for v in vertices {
+                    match v.get(name) {
+                        Some(PropertyValue::Double(x)) => b.append_value(*x),
+                        _ => b.append_null(),
+                    }
+                }
+                Arc::new(b.finish())
             }
             DataType::String | DataType::Date | DataType::Timestamp | DataType::Time => {
-                let vals: Vec<Option<&str>> = vertices
-                    .iter()
-                    .map(|v| match v.get(&prop.name) {
-                        Some(PropertyValue::String(s)) => Some(s.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                Arc::new(StringArray::from(vals))
+                let mut b = StringBuilder::with_capacity(rows, 0);
+                for v in vertices {
+                    match v.get(name) {
+                        Some(PropertyValue::String(s)) => b.append_value(s.as_str()),
+                        _ => b.append_null(),
+                    }
+                }
+                Arc::new(b.finish())
             }
             DataType::List => {
                 // Serialize list items as JSON strings for now.
-                let vals: Vec<Option<&str>> = vertices
-                    .iter()
-                    .map(|v| match v.get(&prop.name) {
-                        Some(PropertyValue::String(s)) => Some(s.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                Arc::new(StringArray::from(vals))
+                let mut b = StringBuilder::with_capacity(rows, 0);
+                for v in vertices {
+                    match v.get(name) {
+                        Some(PropertyValue::String(s)) => b.append_value(s.as_str()),
+                        _ => b.append_null(),
+                    }
+                }
+                Arc::new(b.finish())
             }
         };
         columns.push(col);
