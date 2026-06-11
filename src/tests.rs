@@ -259,6 +259,76 @@ mod storage_tests {
         assert_eq!(&bytes[..], b"name: g");
     }
 
+    #[tokio::test]
+    async fn put_bytes_above_threshold_uses_multipart_round_trips() {
+        use std::sync::Arc;
+
+        use object_store::memory::InMemory;
+
+        use crate::storage::{ChunkStore, MultipartOptions};
+
+        // Tiny threshold / part size so a small payload still exercises the
+        // multipart split. The payload length is deliberately NOT a multiple of
+        // the part size, so the final short part is covered too.
+        let store = ChunkStore::new(Arc::new(InMemory::new()), "g")
+            .with_multipart(MultipartOptions::new(64, 100));
+
+        let payload: Vec<u8> = (0..1234u32).map(|i| (i % 251) as u8).collect();
+        assert!(payload.len() > store.multipart_options().threshold);
+
+        store.put_bytes("vertex/big.bin", payload.clone()).await.unwrap();
+        let got = store.get_bytes("vertex/big.bin").await.unwrap();
+        assert_eq!(&got[..], &payload[..], "multipart round-trip must be byte-identical");
+
+        // A payload at/under the threshold still round-trips (single-put path).
+        let small = vec![7u8; 64];
+        store.put_bytes("vertex/small.bin", small.clone()).await.unwrap();
+        assert_eq!(&store.get_bytes("vertex/small.bin").await.unwrap()[..], &small[..]);
+    }
+
+    #[tokio::test]
+    async fn write_chunk_above_threshold_round_trips_via_multipart() {
+        use std::sync::Arc;
+
+        use arrow_array::Int64Array;
+        use arrow_schema::{DataType as ArrowDataType, Field, Schema};
+        use object_store::memory::InMemory;
+
+        use crate::storage::{ChunkStore, MultipartOptions};
+
+        // A many-row batch whose encoded Parquet comfortably exceeds a 4 KiB
+        // threshold, forcing write_chunk through put_multipart.
+        let schema = Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from((0..50_000i64).collect::<Vec<_>>()))],
+        )
+        .unwrap();
+
+        let store = ChunkStore::new(Arc::new(InMemory::new()), "")
+            .with_multipart(MultipartOptions::new(4 * 1024, 8 * 1024));
+
+        let rel = "vertex/person/id/chunk0.parquet";
+        store.write_chunk(rel, &[batch], &FileType::Parquet).await.unwrap();
+        let back = store.read_chunk(rel, &FileType::Parquet).await.unwrap();
+        let rows: usize = back.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 50_000, "multipart-written chunk must read back fully");
+    }
+
+    #[test]
+    fn multipart_options_defaults_and_overrides() {
+        use crate::storage::{
+            DEFAULT_MULTIPART_PART_SIZE, DEFAULT_MULTIPART_THRESHOLD, MultipartOptions,
+        };
+
+        let d = MultipartOptions::default();
+        assert_eq!(d.threshold, DEFAULT_MULTIPART_THRESHOLD);
+        assert_eq!(d.part_size, DEFAULT_MULTIPART_PART_SIZE);
+
+        // part_size is clamped to >= 1 to avoid a zero-length part loop.
+        assert_eq!(MultipartOptions::new(10, 0).part_size, 1);
+    }
+
     #[test]
     fn retry_options_map_to_object_store_config() {
         use std::time::Duration;

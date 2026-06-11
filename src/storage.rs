@@ -21,7 +21,7 @@ use std::{io::Cursor, sync::Arc, time::Duration};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use object_store::{
-    BackoffConfig, ObjectStore, ObjectStoreExt, ObjectStoreScheme, RetryConfig,
+    BackoffConfig, ObjectStore, ObjectStoreExt, ObjectStoreScheme, PutPayload, RetryConfig,
     aws::AmazonS3Builder, azure::MicrosoftAzureBuilder, gcp::GoogleCloudStorageBuilder,
     http::HttpBuilder, path::Path as StorePath,
 };
@@ -97,6 +97,57 @@ impl From<RetryOptions> for RetryConfig {
             max_retries: o.max_retries,
             retry_timeout: o.retry_timeout,
         }
+    }
+}
+
+/// Default size above which a chunk is uploaded with `put_multipart` instead of
+/// a single `put`: 16 MiB. Below it the round-trip overhead of initiating a
+/// multipart upload (create → parts → complete) isn't worth it.
+pub const DEFAULT_MULTIPART_THRESHOLD: usize = 16 * 1024 * 1024;
+
+/// Default size of each multipart part: 8 MiB. Stays above the 5 MiB minimum
+/// part size most object stores (S3, GCS, R2) require for all but the final
+/// part, and keeps per-part buffering bounded.
+pub const DEFAULT_MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
+
+/// Multipart-upload policy for [`ChunkStore`] writes.
+///
+/// `object_store` can stream a large object to a remote backend (S3, GCS,
+/// Azure, S3-compatible stores) as a sequence of fixed-size parts via
+/// [`ObjectStore::put_multipart`], which the store assembles into one object on
+/// `complete()`. This sidesteps holding/uploading one huge request body and is
+/// the standard path for big objects.
+///
+/// `ChunkStore` switches a write to multipart when the *encoded* chunk exceeds
+/// [`threshold`](Self::threshold) bytes, uploading it in
+/// [`part_size`](Self::part_size)-byte parts; smaller chunks keep the single
+/// `put`. The [`Default`] (16 MiB threshold, 8 MiB parts) keeps small writes —
+/// and effectively all local / in-memory traffic — on the single-`put` path,
+/// since multipart is a remote concern.
+#[derive(Debug, Clone, Copy)]
+pub struct MultipartOptions {
+    /// Encoded-chunk size (bytes) at or below which a single `put` is used.
+    /// Writes strictly larger than this go through `put_multipart`.
+    pub threshold: usize,
+    /// Size (bytes) of each multipart part. Keep ≥ 5 MiB for S3/GCS/R2
+    /// compatibility (all parts but the last must meet the store's minimum).
+    pub part_size: usize,
+}
+
+impl Default for MultipartOptions {
+    fn default() -> Self {
+        Self {
+            threshold: DEFAULT_MULTIPART_THRESHOLD,
+            part_size: DEFAULT_MULTIPART_PART_SIZE,
+        }
+    }
+}
+
+impl MultipartOptions {
+    /// Explicit threshold + part size. `part_size` is clamped to at least 1 to
+    /// avoid a zero-length part loop.
+    pub fn new(threshold: usize, part_size: usize) -> Self {
+        Self { threshold, part_size: part_size.max(1) }
     }
 }
 
@@ -184,12 +235,28 @@ pub fn write_chunk_bytes(batches: &[RecordBatch], file_type: &FileType) -> Resul
 pub struct ChunkStore {
     store: Arc<dyn ObjectStore>,
     prefix: StorePath,
+    multipart: MultipartOptions,
 }
 
 impl ChunkStore {
     /// Wrap an existing `object_store` instance.
     pub fn new(store: Arc<dyn ObjectStore>, prefix: impl Into<StorePath>) -> Self {
-        Self { store, prefix: prefix.into() }
+        Self { store, prefix: prefix.into(), multipart: MultipartOptions::default() }
+    }
+
+    /// Override the [multipart-upload policy](MultipartOptions) (builder style).
+    ///
+    /// Large chunks are uploaded with `put_multipart` once their encoded size
+    /// exceeds `opts.threshold`; this tunes that threshold and the per-part
+    /// size. Returns `self` for chaining off any constructor.
+    pub fn with_multipart(mut self, opts: MultipartOptions) -> Self {
+        self.multipart = opts;
+        self
+    }
+
+    /// The active [multipart-upload policy](MultipartOptions).
+    pub fn multipart_options(&self) -> MultipartOptions {
+        self.multipart
     }
 
     /// Build from a URL: `s3://bucket/prefix`, `gs://bucket/prefix`,
@@ -273,13 +340,17 @@ impl ChunkStore {
                 Arc::from(store)
             }
         };
-        Ok(Self { store, prefix })
+        Ok(Self { store, prefix, multipart: MultipartOptions::default() })
     }
 
     /// Local filesystem store rooted at `root`.
     pub fn local(root: impl AsRef<std::path::Path>) -> Result<Self> {
         let store = object_store::local::LocalFileSystem::new_with_prefix(root)?;
-        Ok(Self { store: Arc::new(store), prefix: StorePath::default() })
+        Ok(Self {
+            store: Arc::new(store),
+            prefix: StorePath::default(),
+            multipart: MultipartOptions::default(),
+        })
     }
 
     /// S3-compatible endpoint with explicit credentials — SeaweedFS, RustFS,
@@ -327,7 +398,11 @@ impl ChunkStore {
             .with_virtual_hosted_style_request(false)
             .with_retry(retry.into())
             .build()?;
-        Ok(Self { store: Arc::new(store), prefix: StorePath::from(prefix) })
+        Ok(Self {
+            store: Arc::new(store),
+            prefix: StorePath::from(prefix),
+            multipart: MultipartOptions::default(),
+        })
     }
 
     fn full_path(&self, rel: &str) -> StorePath {
@@ -345,6 +420,10 @@ impl ChunkStore {
     }
 
     /// Encode and upload one chunk.
+    ///
+    /// Chunks larger than the [multipart threshold](MultipartOptions::threshold)
+    /// stream to the backend via `put_multipart`; smaller ones use a single
+    /// `put`.
     pub async fn write_chunk(
         &self,
         rel: &str,
@@ -352,10 +431,7 @@ impl ChunkStore {
         file_type: &FileType,
     ) -> Result<()> {
         let payload = write_chunk_bytes(batches, file_type)?;
-        self.store
-            .put(&self.full_path(rel), payload.into())
-            .await?;
-        Ok(())
+        self.put_object(rel, payload).await
     }
 
     /// Raw byte fetch (info YAML files, offsets, …).
@@ -363,9 +439,46 @@ impl ChunkStore {
         Ok(self.store.get(&self.full_path(rel)).await?.bytes().await?)
     }
 
-    /// Raw byte upload.
+    /// Raw byte upload. Honors the same multipart threshold as
+    /// [`write_chunk`](Self::write_chunk).
     pub async fn put_bytes(&self, rel: &str, bytes: Vec<u8>) -> Result<()> {
-        self.store.put(&self.full_path(rel), bytes.into()).await?;
+        self.put_object(rel, bytes).await
+    }
+
+    /// Upload `bytes` to `rel`, choosing single-`put` vs `put_multipart` by the
+    /// [multipart policy](MultipartOptions).
+    ///
+    /// For the multipart path the encoded bytes are sliced into
+    /// `part_size`-byte parts and each is uploaded with `put_part`; `complete`
+    /// then assembles them atomically. Parts are uploaded sequentially: chunk
+    /// writes are already parallelised at a higher level, and sequential parts
+    /// keep peak memory at one part plus the source buffer. On any error the
+    /// in-flight upload is aborted so backends without drop-cleanup (S3, GCS)
+    /// don't leak parts.
+    async fn put_object(&self, rel: &str, bytes: Vec<u8>) -> Result<()> {
+        let path = self.full_path(rel);
+        if bytes.len() <= self.multipart.threshold {
+            self.store.put(&path, bytes.into()).await?;
+            return Ok(());
+        }
+
+        let part_size = self.multipart.part_size.max(1);
+        let mut upload = self.store.put_multipart(&path).await?;
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let end = (offset + part_size).min(bytes.len());
+            let part = PutPayload::from(bytes[offset..end].to_vec());
+            if let Err(e) = upload.put_part(part).await {
+                // Best-effort cleanup; surface the original write error.
+                let _ = upload.abort().await;
+                return Err(e.into());
+            }
+            offset = end;
+        }
+        if let Err(e) = upload.complete().await {
+            let _ = upload.abort().await;
+            return Err(e.into());
+        }
         Ok(())
     }
 }
