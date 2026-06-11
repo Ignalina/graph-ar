@@ -16,11 +16,15 @@
 //! # }
 //! ```
 
-use std::{io::Cursor, sync::Arc};
+use std::{io::Cursor, sync::Arc, time::Duration};
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
-use object_store::{ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, path::Path as StorePath};
+use object_store::{
+    BackoffConfig, ObjectStore, ObjectStoreExt, ObjectStoreScheme, RetryConfig,
+    aws::AmazonS3Builder, azure::MicrosoftAzureBuilder, gcp::GoogleCloudStorageBuilder,
+    http::HttpBuilder, path::Path as StorePath,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use url::Url;
 
@@ -28,6 +32,73 @@ use crate::{
     error::{GraphArError, Result},
     types::FileType,
 };
+
+/// Retry / backoff policy for remote (`object_store`) operations.
+///
+/// Object-store backends — S3, GCS, Azure, and S3-compatible stores like
+/// SeaweedFS / RustFS / MinIO — can fail transiently (throttling, dropped
+/// connections, 5xx). `object_store` ships a built-in exponential-backoff
+/// retry loop; `RetryOptions` is graphar's thin, typed front for it, so callers
+/// don't have to depend on `object_store` directly. Convert into the native
+/// [`object_store::RetryConfig`] via [`From`]/[`Into`].
+///
+/// The [`Default`] mirrors `object_store`'s own default (10 retries, 100 ms
+/// initial backoff doubling up to 15 s, bounded by a 3-minute wall-clock
+/// budget), so backends built through [`ChunkStore::from_url`] /
+/// [`ChunkStore::s3_compatible`] retry out of the box exactly as the
+/// underlying library already does. Use [`RetryOptions::none`] to opt out.
+#[derive(Debug, Clone)]
+pub struct RetryOptions {
+    /// Maximum number of retries after the initial attempt. `0` disables retries.
+    pub max_retries: usize,
+    /// Backoff before the first retry.
+    pub init_backoff: Duration,
+    /// Upper bound on a single backoff interval.
+    pub max_backoff: Duration,
+    /// Wall-clock budget across all attempts; once exceeded no further retries
+    /// are made. Keep below ~5 min so credentials/payloads stay valid.
+    pub retry_timeout: Duration,
+}
+
+impl Default for RetryOptions {
+    fn default() -> Self {
+        // Matches object_store::RetryConfig / BackoffConfig defaults so the new
+        // config plumbing preserves the library's existing retry behavior.
+        Self {
+            max_retries: 10,
+            init_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(15),
+            retry_timeout: Duration::from_secs(3 * 60),
+        }
+    }
+}
+
+impl RetryOptions {
+    /// Disable retries entirely (single attempt per operation).
+    pub fn none() -> Self {
+        Self { max_retries: 0, ..Self::default() }
+    }
+
+    /// A bounded policy: at most `max_retries` retries with exponential backoff
+    /// from `init_backoff` (doubling, base 2) capped at `max_backoff`.
+    pub fn new(max_retries: usize, init_backoff: Duration, max_backoff: Duration) -> Self {
+        Self { max_retries, init_backoff, max_backoff, ..Self::default() }
+    }
+}
+
+impl From<RetryOptions> for RetryConfig {
+    fn from(o: RetryOptions) -> Self {
+        RetryConfig {
+            backoff: BackoffConfig {
+                init_backoff: o.init_backoff,
+                max_backoff: o.max_backoff,
+                base: 2.0,
+            },
+            max_retries: o.max_retries,
+            retry_timeout: o.retry_timeout,
+        }
+    }
+}
 
 /// Decode a chunk held in memory.
 pub fn read_chunk_bytes(bytes: Bytes, file_type: &FileType) -> Result<Vec<RecordBatch>> {
@@ -125,16 +196,84 @@ impl ChunkStore {
     /// `az://container/prefix`, `file:///abs/path`, `http(s)://…`.
     ///
     /// Credentials come from the environment (e.g. `AWS_ACCESS_KEY_ID`,
-    /// `GOOGLE_SERVICE_ACCOUNT`, …) as resolved by `object_store`.
+    /// `GOOGLE_SERVICE_ACCOUNT`, …) as resolved by `object_store`. Remote
+    /// backends use the [default retry policy](RetryOptions::default); call
+    /// [`from_url_with_retry`](Self::from_url_with_retry) to override it.
     pub fn from_url(url: &str) -> Result<Self> {
+        Self::from_url_with_retry(url, RetryOptions::default())
+    }
+
+    /// Like [`from_url`](Self::from_url), but with an explicit retry/backoff
+    /// policy applied to the remote (cloud / S3-compatible) backend.
+    ///
+    /// The cloud builders (`AmazonS3Builder`, `GoogleCloudStorageBuilder`,
+    /// `MicrosoftAzureBuilder`, `HttpBuilder`) take a typed
+    /// [`object_store::RetryConfig`], which `parse_url_opts` cannot thread
+    /// through, so this dispatches on the URL scheme and applies `with_retry`
+    /// directly while still honoring the same `AWS_*` / `GOOGLE_*` / `AZURE_*`
+    /// environment configuration. Local / in-memory backends ignore `retry`.
+    pub fn from_url_with_retry(url: &str, retry: RetryOptions) -> Result<Self> {
         let url = Url::parse(url).map_err(|e| GraphArError::Other(e.to_string()))?;
-        let (store, prefix) = object_store::parse_url_opts(
-            &url,
+        let (scheme, prefix) = ObjectStoreScheme::parse(&url)
+            .map_err(|e| GraphArError::Other(format!("unrecognised object-store url: {e}")))?;
+        let retry: RetryConfig = retry.into();
+
+        // Same env filter as before: pass cloud credentials through as config
+        // keys (object_store lowercases + parses them, ignoring unknown ones).
+        let env = || {
             std::env::vars().filter(|(k, _)| {
                 k.starts_with("AWS_") || k.starts_with("GOOGLE_") || k.starts_with("AZURE_")
-            }),
-        )?;
-        Ok(Self { store: Arc::from(store), prefix })
+            })
+        };
+
+        let store: Arc<dyn ObjectStore> = match scheme {
+            ObjectStoreScheme::AmazonS3 => {
+                let mut b = AmazonS3Builder::new().with_url(url.as_str()).with_retry(retry);
+                for (k, v) in env() {
+                    if let Ok(key) = k.to_ascii_lowercase().parse() {
+                        b = b.with_config(key, v);
+                    }
+                }
+                Arc::new(b.build()?)
+            }
+            ObjectStoreScheme::GoogleCloudStorage => {
+                let mut b =
+                    GoogleCloudStorageBuilder::new().with_url(url.as_str()).with_retry(retry);
+                for (k, v) in env() {
+                    if let Ok(key) = k.to_ascii_lowercase().parse() {
+                        b = b.with_config(key, v);
+                    }
+                }
+                Arc::new(b.build()?)
+            }
+            ObjectStoreScheme::MicrosoftAzure => {
+                let mut b =
+                    MicrosoftAzureBuilder::new().with_url(url.as_str()).with_retry(retry);
+                for (k, v) in env() {
+                    if let Ok(key) = k.to_ascii_lowercase().parse() {
+                        b = b.with_config(key, v);
+                    }
+                }
+                Arc::new(b.build()?)
+            }
+            ObjectStoreScheme::Http => {
+                let base = &url[..url::Position::BeforePath];
+                let mut b = HttpBuilder::new().with_url(base.to_string()).with_retry(retry);
+                for (k, v) in env() {
+                    if let Ok(key) = k.to_ascii_lowercase().parse() {
+                        b = b.with_config(key, v);
+                    }
+                }
+                Arc::new(b.build()?)
+            }
+            // Local / in-memory: no network, retry is a no-op. Fall back to the
+            // library's own constructor so URL parsing stays consistent.
+            _ => {
+                let (store, _) = object_store::parse_url(&url)?;
+                Arc::from(store)
+            }
+        };
+        Ok(Self { store, prefix })
     }
 
     /// Local filesystem store rooted at `root`.
@@ -146,12 +285,36 @@ impl ChunkStore {
     /// S3-compatible endpoint with explicit credentials — SeaweedFS, RustFS,
     /// MinIO, Ceph RGW, …. `allow_http` is enabled because these usually run
     /// without TLS inside a private network.
+    ///
+    /// Uses the [default retry policy](RetryOptions::default); call
+    /// [`s3_compatible_with_retry`](Self::s3_compatible_with_retry) to override.
     pub fn s3_compatible(
         endpoint: &str,
         bucket: &str,
         access_key: &str,
         secret_key: &str,
         prefix: &str,
+    ) -> Result<Self> {
+        Self::s3_compatible_with_retry(
+            endpoint,
+            bucket,
+            access_key,
+            secret_key,
+            prefix,
+            RetryOptions::default(),
+        )
+    }
+
+    /// [`s3_compatible`](Self::s3_compatible) with an explicit retry/backoff
+    /// policy — transient failures against SeaweedFS / RustFS / MinIO are
+    /// retried with exponential backoff as configured by `retry`.
+    pub fn s3_compatible_with_retry(
+        endpoint: &str,
+        bucket: &str,
+        access_key: &str,
+        secret_key: &str,
+        prefix: &str,
+        retry: RetryOptions,
     ) -> Result<Self> {
         let store = AmazonS3Builder::new()
             .with_endpoint(endpoint)
@@ -162,6 +325,7 @@ impl ChunkStore {
             .with_allow_http(true)
             // path-style addressing: bucket in the path, not the hostname
             .with_virtual_hosted_style_request(false)
+            .with_retry(retry.into())
             .build()?;
         Ok(Self { store: Arc::new(store), prefix: StorePath::from(prefix) })
     }

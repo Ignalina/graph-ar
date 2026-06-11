@@ -258,6 +258,61 @@ mod storage_tests {
         let bytes = store.get_bytes("meta/graph.yml").await.unwrap();
         assert_eq!(&bytes[..], b"name: g");
     }
+
+    #[test]
+    fn retry_options_map_to_object_store_config() {
+        use std::time::Duration;
+
+        use crate::storage::RetryOptions;
+        use object_store::RetryConfig;
+
+        // Default mirrors object_store's own defaults (behavior preserved).
+        let cfg: RetryConfig = RetryOptions::default().into();
+        assert_eq!(cfg.max_retries, 10);
+        assert_eq!(cfg.backoff.init_backoff, Duration::from_millis(100));
+        assert_eq!(cfg.backoff.max_backoff, Duration::from_secs(15));
+        assert_eq!(cfg.retry_timeout, Duration::from_secs(180));
+
+        // Opt-out and explicit bounds round-trip into the native config.
+        assert_eq!(RetryConfig::from(RetryOptions::none()).max_retries, 0);
+        let custom: RetryConfig =
+            RetryOptions::new(3, Duration::from_millis(50), Duration::from_secs(2)).into();
+        assert_eq!(custom.max_retries, 3);
+        assert_eq!(custom.backoff.init_backoff, Duration::from_millis(50));
+        assert_eq!(custom.backoff.max_backoff, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn s3_compatible_with_retry_constructs() {
+        use std::time::Duration;
+
+        use crate::storage::RetryOptions;
+
+        // The retry config is consumed by the S3 builder; a successful build
+        // proves the plumbing is wired (no network is touched at construction).
+        let store = ChunkStore::s3_compatible_with_retry(
+            "http://127.0.0.1:9999",
+            "bucket",
+            "key",
+            "secret",
+            "graphs/social",
+            RetryOptions::new(5, Duration::from_millis(20), Duration::from_secs(1)),
+        );
+        assert!(store.is_ok(), "s3_compatible_with_retry should construct");
+    }
+
+    #[tokio::test]
+    async fn from_url_with_retry_local_round_trips() {
+        use crate::storage::RetryOptions;
+
+        // Local backend ignores retry, but the with_retry path must still build
+        // and round-trip (the scheme-dispatch fallback for file://).
+        let dir = tempdir().unwrap();
+        let url = format!("file://{}", dir.path().display());
+        let store = ChunkStore::from_url_with_retry(&url, RetryOptions::none()).unwrap();
+        store.put_bytes("meta/graph.yml", b"name: g".to_vec()).await.unwrap();
+        assert_eq!(&store.get_bytes("meta/graph.yml").await.unwrap()[..], b"name: g");
+    }
 }
 
 #[cfg(test)]
