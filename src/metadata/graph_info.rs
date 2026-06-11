@@ -9,7 +9,10 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphInfo {
     pub name: String,
-    /// Root directory for all data files (relative or absolute).
+    /// Root directory for all data files (relative or absolute). Optional in
+    /// the `gar/v1` spec — the upstream testdata `*.graph.yml` files omit it —
+    /// so it defaults to empty (data resolved relative to the info file).
+    #[serde(default)]
     pub prefix: String,
     #[serde(default)]
     pub vertices: Vec<String>,

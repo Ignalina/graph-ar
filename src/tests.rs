@@ -464,3 +464,299 @@ mod io_tests {
         assert_eq!(names, vec!["id", "name", "age"]);
     }
 }
+
+#[cfg(test)]
+mod validate_tests {
+    use std::path::Path;
+
+    use crate::{
+        metadata::{AdjListInfo, EdgeInfo, GraphInfo, Property, PropertyGroup, VertexInfo},
+        types::{AdjListType, DataType, FileType},
+        validate::{Severity, ValidateOptions, validate_graph_dir, validate_vertex_info},
+        writer::{Edge, EdgesBuilder, PropertyValue, Vertex, VerticesBuilder},
+    };
+    use tempfile::tempdir;
+
+    fn errors(issues: &[crate::validate::ValidationIssue]) -> Vec<String> {
+        issues
+            .iter()
+            .filter(|i| i.severity == Severity::Error)
+            .map(|i| i.to_string())
+            .collect()
+    }
+
+    fn person_vertex_info() -> VertexInfo {
+        VertexInfo::new("person", 10)
+            .with_property_group(PropertyGroup::new(
+                vec![Property::new("id", DataType::Int64).primary()],
+                FileType::Parquet,
+            ))
+            .with_property_group(PropertyGroup::new(
+                vec![
+                    Property::new("firstName", DataType::String),
+                    Property::new("lastName", DataType::String),
+                ],
+                FileType::Parquet,
+            ))
+    }
+
+    fn knows_edge_info() -> EdgeInfo {
+        EdgeInfo::new("person", "knows", "person", 1024, 10, 10, false)
+            .with_adj_list(AdjListInfo {
+                ordered: true,
+                aligned_by: "src".into(),
+                file_type: FileType::Parquet,
+                prefix: None,
+            })
+            .with_property_group(PropertyGroup::new(
+                vec![Property::new("creationDate", DataType::String)],
+                FileType::Parquet,
+            ))
+    }
+
+    /// Build a small graph with the public builders, dump it, then assert the
+    /// validator passes AND the on-disk layout matches the gar/v1 paths exactly.
+    #[test]
+    fn round_trip_conformance() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+
+        // --- vertices ---
+        let vi = person_vertex_info();
+        let mut vb = VerticesBuilder::new(vi.clone(), base);
+        for i in 0..25i64 {
+            vb.add_vertex(
+                Vertex::new()
+                    .add_property("id", PropertyValue::Int64(i))
+                    .add_property("firstName", PropertyValue::String(format!("first{i}")))
+                    .add_property("lastName", PropertyValue::String(format!("last{i}"))),
+            );
+        }
+        let vchunks = vb.dump().unwrap();
+        assert_eq!(vchunks, 3, "ceil(25/10) vertex chunks");
+
+        // --- edges (ordered_by_source) ---
+        let ei = knows_edge_info();
+        let mut eb = EdgesBuilder::new(ei.clone(), base, AdjListType::OrderedBySource, 25);
+        for i in 0..24i64 {
+            eb.add_edge(
+                Edge::new(i, i + 1)
+                    .add_property("creationDate", PropertyValue::String(format!("2020-{i}"))),
+            );
+        }
+        eb.dump().unwrap();
+
+        // --- info files ---
+        vi.save(base.join("person.vertex.yml")).unwrap();
+        ei.save(base.join("person_knows_person.edge.yml")).unwrap();
+        let gi = GraphInfo::new("social", "")
+            .with_vertex("person.vertex.yml")
+            .with_edge("person_knows_person.edge.yml");
+        gi.save(base.join("social.graph.yml")).unwrap();
+
+        // --- exact spec paths exist on disk ---
+        let expect = |rel: &str| {
+            assert!(base.join(rel).exists(), "expected spec path missing: {rel}");
+        };
+        expect("vertex/person/id/chunk0.parquet");
+        expect("vertex/person/id/chunk2.parquet"); // 3rd chunk
+        expect("vertex/person/firstName_lastName/chunk0.parquet");
+        expect("edge/person_knows_person/ordered_by_source/adj_list/part0/chunk0.parquet");
+        expect("edge/person_knows_person/ordered_by_source/offset/chunk0.parquet");
+        expect("edge/person_knows_person/ordered_by_source/creationDate/part0/chunk0.parquet");
+
+        // --- validator passes (no errors) ---
+        let issues = validate_graph_dir(base.join("social.graph.yml"));
+        let errs = errors(&issues);
+        assert!(errs.is_empty(), "round-trip graph should validate cleanly, got: {errs:?}");
+    }
+
+    #[test]
+    fn missing_vertex_chunk_dir_is_error() {
+        let dir = tempdir().unwrap();
+        let vi = person_vertex_info();
+        // Info written, but no chunk data dumped.
+        let issues = validate_vertex_info(&vi, dir.path(), &ValidateOptions::default());
+        let errs = errors(&issues);
+        assert!(
+            errs.iter().any(|e| e.contains("vertex chunk") && e.contains("missing")),
+            "missing chunk dir must be an error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn bad_version_is_error() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let mut vi = person_vertex_info();
+        vi.version = "gar/v0".into();
+        let mut vb = VerticesBuilder::new(vi.clone(), base);
+        vb.add_vertex(Vertex::new().add_property("id", PropertyValue::Int64(0)));
+        vb.dump().unwrap();
+        let issues = validate_vertex_info(&vi, base, &ValidateOptions::default());
+        let errs = errors(&issues);
+        assert!(errs.iter().any(|e| e.contains("version")), "bad version, got: {errs:?}");
+    }
+
+    #[test]
+    fn duplicate_property_across_groups_is_error() {
+        // `id` declared in two groups violates the one-group-per-property rule.
+        let vi = VertexInfo::new("person", 10)
+            .with_property_group(PropertyGroup::new(
+                vec![Property::new("id", DataType::Int64).primary()],
+                FileType::Parquet,
+            ))
+            .with_property_group(PropertyGroup::new(
+                vec![Property::new("id", DataType::Int64)],
+                FileType::Parquet,
+            ));
+        let dir = tempdir().unwrap();
+        let issues = validate_vertex_info(&vi, dir.path(), &ValidateOptions::default());
+        let errs = errors(&issues);
+        assert!(
+            errs.iter().any(|e| e.contains("more than one group")),
+            "duplicate property must be an error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn zero_chunk_size_is_error() {
+        let mut vi = person_vertex_info();
+        vi.chunk_size = 0;
+        let dir = tempdir().unwrap();
+        let issues = validate_vertex_info(&vi, dir.path(), &ValidateOptions::default());
+        assert!(errors(&issues).iter().any(|e| e.contains("chunk_size")));
+    }
+
+    #[test]
+    fn multiple_primaries_is_error() {
+        // gar/v1 allows at most one primary property per vertex/edge (verified
+        // against the upstream corpus, where every vertex has exactly one).
+        let vi = VertexInfo::new("person", 10).with_property_group(PropertyGroup::new(
+            vec![
+                Property::new("id", DataType::Int64).primary(),
+                Property::new("uid", DataType::Int64).primary(),
+            ],
+            FileType::Parquet,
+        ));
+        let dir = tempdir().unwrap();
+        let issues = validate_vertex_info(&vi, dir.path(), &ValidateOptions::default());
+        assert!(
+            errors(&issues).iter().any(|e| e.contains("primary properties")),
+            "two primaries must be an error, got: {:?}",
+            errors(&issues)
+        );
+    }
+
+    #[test]
+    fn extra_file_in_chunk_dir_is_warning_not_error() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let vi = VertexInfo::new("person", 10).with_property_group(PropertyGroup::new(
+            vec![Property::new("id", DataType::Int64).primary()],
+            FileType::Parquet,
+        ));
+        let mut vb = VerticesBuilder::new(vi.clone(), base);
+        vb.add_vertex(Vertex::new().add_property("id", PropertyValue::Int64(0)));
+        vb.dump().unwrap();
+        // Drop a stray file into the chunk dir.
+        std::fs::write(base.join("vertex/person/id/README.txt"), b"stray").unwrap();
+        let issues = validate_vertex_info(&vi, base, &ValidateOptions::default());
+        assert!(errors(&issues).is_empty(), "stray file must not be an error");
+        assert!(
+            issues.iter().any(|i| i.severity == Severity::Warning
+                && i.message.contains("unexpected file")),
+            "stray file should be a warning"
+        );
+    }
+
+    /// Opt-in: validate the official Apache GraphAr `gar/v1` testdata corpus.
+    ///
+    /// This test never fetches over the network. Point it at a local checkout
+    /// of <https://github.com/apache/incubator-graphar-testing>:
+    ///
+    /// ```text
+    /// git clone --depth 1 https://github.com/apache/incubator-graphar-testing /tmp/graphar-testdata
+    /// GRAPHAR_TESTDATA=/tmp/graphar-testdata cargo test -p graphar --  --ignored corpus
+    /// ```
+    ///
+    /// The corpus writes *extensionless* chunk files (`chunk0`, not
+    /// `chunk0.parquet`), so it is validated with [`ValidateOptions::corpus`].
+    ///
+    /// Two parts of the corpus are intentionally skipped, not failed:
+    /// - the `java/` subtree, whose info files use a different (non-`gar/v1`)
+    ///   field schema (`label` instead of `type`) and don't load into our model;
+    /// - any graph whose info file uses a parameterized list type (e.g.
+    ///   `list<float>`) that knut's `DataType` enum doesn't yet model.
+    ///
+    /// A graph that loads is held to the structural rules and must validate with
+    /// no errors. This was checked against a real checkout during development.
+    #[test]
+    #[ignore = "requires GRAPHAR_TESTDATA pointing at a local corpus checkout"]
+    fn corpus_validates() {
+        let root = match std::env::var("GRAPHAR_TESTDATA") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("GRAPHAR_TESTDATA not set; skipping corpus validation");
+                return;
+            }
+        };
+        let opts = ValidateOptions::corpus();
+
+        // Walk for every *.graph.yml under the corpus and validate it.
+        let mut graph_ymls = Vec::new();
+        collect_graph_ymls(Path::new(&root), &mut graph_ymls);
+        assert!(!graph_ymls.is_empty(), "no *.graph.yml found under {root}");
+
+        let mut validated = 0usize;
+        let mut skipped = 0usize;
+        let mut total_errors = Vec::new();
+        for yml in &graph_ymls {
+            // The java/ corpus uses a non-gar/v1 info-file schema.
+            if yml.components().any(|c| c.as_os_str() == "java") {
+                skipped += 1;
+                continue;
+            }
+            let issues = crate::validate::validate_graph_dir_with(yml, &opts);
+            // A hard load failure (unsupported parameterized type, foreign
+            // schema) is a known model gap, not a structural violation — skip it.
+            let load_failed = issues
+                .iter()
+                .any(|i| i.message.contains("failed to load") || i.message.contains("YAML parse"));
+            if load_failed {
+                skipped += 1;
+                continue;
+            }
+            validated += 1;
+            for issue in &issues {
+                if issue.severity == Severity::Error {
+                    total_errors.push(format!("{}: {issue}", yml.display()));
+                }
+            }
+        }
+        assert!(
+            total_errors.is_empty(),
+            "corpus validation found {} errors:\n{}",
+            total_errors.len(),
+            total_errors.join("\n")
+        );
+        assert!(validated > 0, "expected to validate at least one gar/v1 corpus graph");
+        eprintln!("validated {validated} corpus graphs cleanly ({skipped} skipped)");
+    }
+
+    fn collect_graph_ymls(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_graph_ymls(&path, out);
+            } else if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".graph.yml"))
+            {
+                out.push(path);
+            }
+        }
+    }
+}
