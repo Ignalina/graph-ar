@@ -56,5 +56,8 @@ pub fn merge_property_groups(groups: &[Vec<RecordBatch>]) -> Result<RecordBatch>
         }
     }
 
-    Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?)
+    Ok(RecordBatch::try_new(
+        Arc::new(Schema::new(fields)),
+        columns,
+    )?)
 }

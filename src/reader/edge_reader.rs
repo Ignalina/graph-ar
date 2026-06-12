@@ -52,17 +52,18 @@ impl EdgeReader {
         adj_type: &AdjListType,
         vertex_chunk: u64,
     ) -> Result<Vec<RecordBatch>> {
-        let info = self
-            .info
-            .get_adj_list_info(adj_type)
-            .ok_or_else(|| GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string()))?;
+        let info = self.info.get_adj_list_info(adj_type).ok_or_else(|| {
+            GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
+        })?;
 
         let mut all = Vec::new();
         let mut edge_chunk = 0u64;
         loop {
-            let path = self
-                .base_dir
-                .join(self.info.adj_list_chunk_path(adj_type, vertex_chunk, edge_chunk)?);
+            let path = self.base_dir.join(self.info.adj_list_chunk_path(
+                adj_type,
+                vertex_chunk,
+                edge_chunk,
+            )?);
             if !path.exists() {
                 break;
             }
@@ -84,10 +85,9 @@ impl EdgeReader {
                 "offsets only exist for ordered adjacency lists".into(),
             ));
         }
-        let info = self
-            .info
-            .get_adj_list_info(adj_type)
-            .ok_or_else(|| GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string()))?;
+        let info = self.info.get_adj_list_info(adj_type).ok_or_else(|| {
+            GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
+        })?;
         let path = self
             .base_dir
             .join(self.info.offset_chunk_path(adj_type, vertex_chunk)?);
@@ -104,9 +104,12 @@ impl EdgeReader {
         let mut all = Vec::new();
         let mut edge_chunk = 0u64;
         loop {
-            let path = self
-                .base_dir
-                .join(self.info.property_chunk_path(adj_type, group, vertex_chunk, edge_chunk));
+            let path = self.base_dir.join(self.info.property_chunk_path(
+                adj_type,
+                group,
+                vertex_chunk,
+                edge_chunk,
+            ));
             if !path.exists() {
                 break;
             }

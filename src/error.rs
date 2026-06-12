@@ -29,7 +29,11 @@ pub enum GraphArError {
     VertexTypeNotFound(String),
 
     #[error("Edge type '{src}'-'{edge}'-'{dst}' not found in graph")]
-    EdgeTypeNotFound { src: String, edge: String, dst: String },
+    EdgeTypeNotFound {
+        src: String,
+        edge: String,
+        dst: String,
+    },
 
     #[error("Property '{0}' not found in property group")]
     PropertyNotFound(String),

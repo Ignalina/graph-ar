@@ -49,15 +49,27 @@ pub struct ValidationIssue {
 
 impl ValidationIssue {
     fn error(message: impl Into<String>) -> Self {
-        Self { severity: Severity::Error, message: message.into(), path: None }
+        Self {
+            severity: Severity::Error,
+            message: message.into(),
+            path: None,
+        }
     }
 
     fn error_at(message: impl Into<String>, path: impl Into<PathBuf>) -> Self {
-        Self { severity: Severity::Error, message: message.into(), path: Some(path.into()) }
+        Self {
+            severity: Severity::Error,
+            message: message.into(),
+            path: Some(path.into()),
+        }
     }
 
     fn warn_at(message: impl Into<String>, path: impl Into<PathBuf>) -> Self {
-        Self { severity: Severity::Warning, message: message.into(), path: Some(path.into()) }
+        Self {
+            severity: Severity::Warning,
+            message: message.into(),
+            path: Some(path.into()),
+        }
     }
 }
 
@@ -89,7 +101,10 @@ pub struct ValidateOptions {
 
 impl Default for ValidateOptions {
     fn default() -> Self {
-        Self { extensionless_chunks: false, require_chunks: true }
+        Self {
+            extensionless_chunks: false,
+            require_chunks: true,
+        }
     }
 }
 
@@ -97,7 +112,10 @@ impl ValidateOptions {
     /// Lenient profile for reading the upstream testdata corpus: extensionless
     /// chunk files are accepted and a missing chunk is a warning, not an error.
     pub fn corpus() -> Self {
-        Self { extensionless_chunks: true, require_chunks: false }
+        Self {
+            extensionless_chunks: true,
+            require_chunks: false,
+        }
     }
 }
 
@@ -212,7 +230,13 @@ pub fn validate_vertex_info(
     // chunk0 must be present (when chunks are required).
     for group in &vi.property_groups {
         let group_dir = base.join(&vi.prefix).join(group.dir_name());
-        check_chunk_dir(&group_dir, &group.file_type, opts, &mut issues, "vertex chunk");
+        check_chunk_dir(
+            &group_dir,
+            &group.file_type,
+            opts,
+            &mut issues,
+            "vertex chunk",
+        );
     }
 
     issues
@@ -235,7 +259,9 @@ pub fn validate_edge_info(
     }
     let triple = format!("{}_{}_{}", ei.src_type, ei.edge_type, ei.dst_type);
     if ei.chunk_size == 0 {
-        issues.push(ValidationIssue::error(format!("edge `{triple}` chunk_size must be > 0")));
+        issues.push(ValidationIssue::error(format!(
+            "edge `{triple}` chunk_size must be > 0"
+        )));
     }
     if ei.src_chunk_size == 0 || ei.dst_chunk_size == 0 {
         issues.push(ValidationIssue::error(format!(
@@ -283,7 +309,13 @@ pub fn validate_edge_info(
         // must not (the spec only defines offsets for ordered adj lists).
         if adj_type.is_ordered() {
             let offset_dir = adj_dir.join("offset");
-            check_chunk_dir(&offset_dir, &adj.file_type, opts, &mut issues, "edge offset");
+            check_chunk_dir(
+                &offset_dir,
+                &adj.file_type,
+                opts,
+                &mut issues,
+                "edge offset",
+            );
         } else if adj_dir.join("offset").exists() {
             issues.push(ValidationIssue::warn_at(
                 format!(
@@ -431,12 +463,7 @@ fn check_part_chunk_dir(
     }
 }
 
-fn push_missing(
-    dir: &Path,
-    opts: &ValidateOptions,
-    issues: &mut Vec<ValidationIssue>,
-    what: &str,
-) {
+fn push_missing(dir: &Path, opts: &ValidateOptions, issues: &mut Vec<ValidationIssue>, what: &str) {
     if opts.require_chunks {
         issues.push(ValidationIssue::error_at(
             format!("{what}: expected directory is missing"),
@@ -505,7 +532,10 @@ fn check_chunk_sequence(
     indices.sort_unstable();
     if indices[0] != 0 {
         issues.push(ValidationIssue::error_at(
-            format!("{what}: chunk numbering must start at chunk0, found chunk{}", indices[0]),
+            format!(
+                "{what}: chunk numbering must start at chunk0, found chunk{}",
+                indices[0]
+            ),
             dir,
         ));
     }

@@ -1,11 +1,11 @@
-pub mod parquet;
 pub mod csv;
-pub mod json;
 pub mod ipc;
+pub mod json;
 pub mod orc;
+pub mod parquet;
 
-use std::path::Path;
 use arrow_array::RecordBatch;
+use std::path::Path;
 
 use crate::{error::Result, types::FileType};
 

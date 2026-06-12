@@ -12,9 +12,9 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use graphar::{FileType, storage::ChunkStore};
 use testcontainers::{
+    GenericImage, ImageExt,
     core::{ContainerPort, ExecCommand, WaitFor},
     runners::AsyncRunner,
-    GenericImage, ImageExt,
 };
 
 fn ensure_docker_host() {

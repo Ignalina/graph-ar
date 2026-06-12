@@ -25,7 +25,11 @@ pub struct Edge {
 
 impl Edge {
     pub fn new(src: i64, dst: i64) -> Self {
-        Self { src, dst, properties: HashMap::new() }
+        Self {
+            src,
+            dst,
+            properties: HashMap::new(),
+        }
     }
 
     pub fn add_property(mut self, name: impl Into<String>, value: PropertyValue) -> Self {
@@ -79,7 +83,11 @@ impl EdgesBuilder {
         // is what lets the single advancing cursor below stay correct.
         let aligned_by_src = self.adj_type.aligned_by_src();
         let key = |e: &Edge| -> u64 {
-            if aligned_by_src { e.src as u64 } else { e.dst as u64 }
+            if aligned_by_src {
+                e.src as u64
+            } else {
+                e.dst as u64
+            }
         };
         self.edges.sort_unstable_by_key(key);
 
@@ -124,9 +132,11 @@ impl EdgesBuilder {
             let edge_chunk_size = self.info.chunk_size as usize;
             for (ec, edge_slice) in chunk_edges.chunks(edge_chunk_size).enumerate() {
                 let batch = build_adj_list_batch(edge_slice)?;
-                let path = self
-                    .base_dir
-                    .join(self.info.adj_list_chunk_path(&self.adj_type, vc, ec as u64)?);
+                let path = self.base_dir.join(self.info.adj_list_chunk_path(
+                    &self.adj_type,
+                    vc,
+                    ec as u64,
+                )?);
                 io::write_chunk(&path, &[batch], &file_type)?;
 
                 // Write property group chunks.
@@ -145,8 +155,9 @@ impl EdgesBuilder {
             // Write offset chunk for ordered adj lists.
             if self.adj_type.is_ordered() {
                 let offset_batch = build_offset_batch(&chunk_edges, v_start, v_end, vchunk_size)?;
-                let offset_path =
-                    self.base_dir.join(self.info.offset_chunk_path(&self.adj_type, vc)?);
+                let offset_path = self
+                    .base_dir
+                    .join(self.info.offset_chunk_path(&self.adj_type, vc)?);
                 io::write_chunk(&offset_path, &[offset_batch], &file_type)?;
             }
         }

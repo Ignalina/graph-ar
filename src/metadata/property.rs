@@ -50,13 +50,21 @@ pub struct PropertyGroup {
 
 impl PropertyGroup {
     pub fn new(properties: Vec<Property>, file_type: FileType) -> Self {
-        Self { properties, file_type, prefix: None }
+        Self {
+            properties,
+            file_type,
+            prefix: None,
+        }
     }
 
     /// Directory name derived from property names joined by `_`.
     pub fn dir_name(&self) -> String {
         self.prefix.clone().unwrap_or_else(|| {
-            self.properties.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("_")
+            self.properties
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join("_")
         })
     }
 

@@ -57,7 +57,11 @@ impl GraphInfo {
     }
 
     /// Resolve and load a VertexInfo by type label.
-    pub fn get_vertex_info(&self, vertex_type: &str, base_dir: impl AsRef<Path>) -> Result<VertexInfo> {
+    pub fn get_vertex_info(
+        &self,
+        vertex_type: &str,
+        base_dir: impl AsRef<Path>,
+    ) -> Result<VertexInfo> {
         let base = base_dir.as_ref();
         for rel in &self.vertices {
             let full = base.join(rel);
@@ -95,12 +99,18 @@ impl GraphInfo {
     /// Load all vertex infos referenced by this graph.
     pub fn all_vertex_infos(&self, base_dir: impl AsRef<Path>) -> Result<Vec<VertexInfo>> {
         let base = base_dir.as_ref();
-        self.vertices.iter().map(|rel| VertexInfo::load(base.join(rel))).collect()
+        self.vertices
+            .iter()
+            .map(|rel| VertexInfo::load(base.join(rel)))
+            .collect()
     }
 
     /// Load all edge infos referenced by this graph.
     pub fn all_edge_infos(&self, base_dir: impl AsRef<Path>) -> Result<Vec<EdgeInfo>> {
         let base = base_dir.as_ref();
-        self.edges.iter().map(|rel| EdgeInfo::load(base.join(rel))).collect()
+        self.edges
+            .iter()
+            .map(|rel| EdgeInfo::load(base.join(rel)))
+            .collect()
     }
 }

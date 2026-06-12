@@ -83,11 +83,17 @@ impl AdjListType {
     }
 
     pub fn is_ordered(&self) -> bool {
-        matches!(self, AdjListType::OrderedBySource | AdjListType::OrderedByDest)
+        matches!(
+            self,
+            AdjListType::OrderedBySource | AdjListType::OrderedByDest
+        )
     }
 
     pub fn aligned_by_src(&self) -> bool {
-        matches!(self, AdjListType::OrderedBySource | AdjListType::UnorderedBySource)
+        matches!(
+            self,
+            AdjListType::OrderedBySource | AdjListType::UnorderedBySource
+        )
     }
 }
 

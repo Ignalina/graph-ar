@@ -51,7 +51,10 @@ impl VertexReader {
         let rel = self.info.chunk_path(group, chunk_index);
         let full = self.base_dir.join(&rel);
         if !full.exists() {
-            return Err(GraphArError::ChunkOutOfRange(chunk_index, self.chunk_count()));
+            return Err(GraphArError::ChunkOutOfRange(
+                chunk_index,
+                self.chunk_count(),
+            ));
         }
         io::read_chunk(&full, &group.file_type)
     }
@@ -65,10 +68,8 @@ impl VertexReader {
 
     /// Read the given property groups and merge them into one batch.
     pub fn read_merged_groups(&self, groups: &[PropertyGroup]) -> Result<RecordBatch> {
-        let per_group: Result<Vec<_>> = groups
-            .iter()
-            .map(|g| self.read_property_group(g))
-            .collect();
+        let per_group: Result<Vec<_>> =
+            groups.iter().map(|g| self.read_property_group(g)).collect();
         crate::merge::merge_property_groups(&per_group?)
     }
 
@@ -94,7 +95,12 @@ pub struct VertexChunkIter<'a> {
 impl<'a> VertexChunkIter<'a> {
     pub fn new(reader: &'a VertexReader, group: &'a PropertyGroup) -> Self {
         let total = reader.chunk_count();
-        Self { reader, group, current: 0, total }
+        Self {
+            reader,
+            group,
+            current: 0,
+            total,
+        }
     }
 }
 

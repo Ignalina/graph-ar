@@ -101,9 +101,9 @@ impl EdgeInfo {
     }
 
     pub fn get_adj_list_info(&self, adj_type: &AdjListType) -> Option<&AdjListInfo> {
-        self.adj_lists.iter().find(|a| {
-            a.adj_list_type().ok().as_ref() == Some(adj_type)
-        })
+        self.adj_lists
+            .iter()
+            .find(|a| a.adj_list_type().ok().as_ref() == Some(adj_type))
     }
 
     /// Path to an adjacency list chunk file.
@@ -114,25 +114,25 @@ impl EdgeInfo {
         vertex_chunk: u64,
         edge_chunk: u64,
     ) -> Result<PathBuf> {
-        let info = self
-            .get_adj_list_info(adj_type)
-            .ok_or_else(|| GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string()))?;
+        let info = self.get_adj_list_info(adj_type).ok_or_else(|| {
+            GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
+        })?;
         Ok(PathBuf::from(&self.prefix)
             .join(adj_type.dir_name())
             .join("adj_list")
             .join(format!("part{vertex_chunk}"))
-            .join(format!("chunk{}.{}", edge_chunk, info.file_type.extension())))
+            .join(format!(
+                "chunk{}.{}",
+                edge_chunk,
+                info.file_type.extension()
+            )))
     }
 
     /// Path to the offset chunk for a given vertex chunk (ordered adj lists only).
-    pub fn offset_chunk_path(
-        &self,
-        adj_type: &AdjListType,
-        vertex_chunk: u64,
-    ) -> Result<PathBuf> {
-        let info = self
-            .get_adj_list_info(adj_type)
-            .ok_or_else(|| GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string()))?;
+    pub fn offset_chunk_path(&self, adj_type: &AdjListType, vertex_chunk: u64) -> Result<PathBuf> {
+        let info = self.get_adj_list_info(adj_type).ok_or_else(|| {
+            GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
+        })?;
         if !adj_type.is_ordered() {
             return Err(GraphArError::Other(
                 "offset files only exist for ordered adjacency lists".into(),
@@ -141,7 +141,11 @@ impl EdgeInfo {
         Ok(PathBuf::from(&self.prefix)
             .join(adj_type.dir_name())
             .join("offset")
-            .join(format!("chunk{}.{}", vertex_chunk, info.file_type.extension())))
+            .join(format!(
+                "chunk{}.{}",
+                vertex_chunk,
+                info.file_type.extension()
+            )))
     }
 
     /// Path to an edge property group chunk file.
@@ -156,11 +160,17 @@ impl EdgeInfo {
             .join(adj_type.dir_name())
             .join(group.dir_name())
             .join(format!("part{vertex_chunk}"))
-            .join(format!("chunk{}.{}", edge_chunk, group.file_type.extension()))
+            .join(format!(
+                "chunk{}.{}",
+                edge_chunk,
+                group.file_type.extension()
+            ))
     }
 
     pub fn find_property_group(&self, property_name: &str) -> Option<&PropertyGroup> {
-        self.property_groups.iter().find(|g| g.has_property(property_name))
+        self.property_groups
+            .iter()
+            .find(|g| g.has_property(property_name))
     }
 
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {

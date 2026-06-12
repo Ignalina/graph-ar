@@ -66,7 +66,8 @@ mod metadata_tests {
         let vi = person_vertex_info();
         vi.save(dir.path().join("person.vertex.yml")).unwrap();
         let ei = knows_edge_info();
-        ei.save(dir.path().join("person_knows_person.edge.yml")).unwrap();
+        ei.save(dir.path().join("person_knows_person.edge.yml"))
+            .unwrap();
 
         let gi = GraphInfo::new("test_graph", "./")
             .with_vertex("person.vertex.yml")
@@ -80,7 +81,9 @@ mod metadata_tests {
         let vi2 = loaded_gi.get_vertex_info("person", dir.path()).unwrap();
         assert_eq!(vi2.chunk_size, 100);
 
-        let ei2 = loaded_gi.get_edge_info("person", "knows", "person", dir.path()).unwrap();
+        let ei2 = loaded_gi
+            .get_edge_info("person", "knows", "person", dir.path())
+            .unwrap();
         assert!(!ei2.directed);
     }
 
@@ -89,13 +92,18 @@ mod metadata_tests {
         let vi = person_vertex_info();
         let group = &vi.property_groups[1]; // firstName_lastName
         let path = vi.chunk_path(group, 0);
-        assert_eq!(path.to_str().unwrap(), "vertex/person/firstName_lastName/chunk0.parquet");
+        assert_eq!(
+            path.to_str().unwrap(),
+            "vertex/person/firstName_lastName/chunk0.parquet"
+        );
     }
 
     #[test]
     fn edge_adj_list_path_formatting() {
         let ei = knows_edge_info();
-        let path = ei.adj_list_chunk_path(&AdjListType::OrderedBySource, 2, 3).unwrap();
+        let path = ei
+            .adj_list_chunk_path(&AdjListType::OrderedBySource, 2, 3)
+            .unwrap();
         assert_eq!(
             path.to_str().unwrap(),
             "edge/person_knows_person/ordered_by_source/adj_list/part2/chunk3.parquet"
@@ -105,7 +113,9 @@ mod metadata_tests {
     #[test]
     fn offset_path_formatting() {
         let ei = knows_edge_info();
-        let path = ei.offset_chunk_path(&AdjListType::OrderedBySource, 0).unwrap();
+        let path = ei
+            .offset_chunk_path(&AdjListType::OrderedBySource, 0)
+            .unwrap();
         assert_eq!(
             path.to_str().unwrap(),
             "edge/person_knows_person/ordered_by_source/offset/chunk0.parquet"
@@ -153,9 +163,7 @@ mod format_matrix_tests {
 
     fn round_trip(file_type: FileType) {
         let dir = tempdir().unwrap();
-        let path = dir
-            .path()
-            .join(format!("chunk0.{}", file_type.extension()));
+        let path = dir.path().join(format!("chunk0.{}", file_type.extension()));
         let batch = sample_batch();
         io::write_chunk(&path, std::slice::from_ref(&batch), &file_type).unwrap();
         let batches = io::read_chunk(&path, &file_type).unwrap();
@@ -201,7 +209,10 @@ mod format_matrix_tests {
         ] {
             let path = dir.path().join(format!("empty.{}", ft.extension()));
             io::write_chunk(&path, &[], &ft).unwrap();
-            assert!(!path.exists(), "{ft:?} should not create a file for empty input");
+            assert!(
+                !path.exists(),
+                "{ft:?} should not create a file for empty input"
+            );
         }
     }
 }
@@ -243,7 +254,10 @@ mod storage_tests {
             FileType::ArrowIpc,
         ] {
             let rel = format!("vertex/person/id/chunk0.{}", ft.extension());
-            store.write_chunk(&rel, &[sample_batch()], &ft).await.unwrap();
+            store
+                .write_chunk(&rel, &[sample_batch()], &ft)
+                .await
+                .unwrap();
             let batches = store.read_chunk(&rel, &ft).await.unwrap();
             let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
             assert_eq!(rows, 2, "{ft:?}");
@@ -254,7 +268,10 @@ mod storage_tests {
     async fn chunk_store_raw_bytes() {
         let dir = tempdir().unwrap();
         let store = ChunkStore::local(dir.path()).unwrap();
-        store.put_bytes("meta/graph.yml", b"name: g".to_vec()).await.unwrap();
+        store
+            .put_bytes("meta/graph.yml", b"name: g".to_vec())
+            .await
+            .unwrap();
         let bytes = store.get_bytes("meta/graph.yml").await.unwrap();
         assert_eq!(&bytes[..], b"name: g");
     }
@@ -276,14 +293,27 @@ mod storage_tests {
         let payload: Vec<u8> = (0..1234u32).map(|i| (i % 251) as u8).collect();
         assert!(payload.len() > store.multipart_options().threshold);
 
-        store.put_bytes("vertex/big.bin", payload.clone()).await.unwrap();
+        store
+            .put_bytes("vertex/big.bin", payload.clone())
+            .await
+            .unwrap();
         let got = store.get_bytes("vertex/big.bin").await.unwrap();
-        assert_eq!(&got[..], &payload[..], "multipart round-trip must be byte-identical");
+        assert_eq!(
+            &got[..],
+            &payload[..],
+            "multipart round-trip must be byte-identical"
+        );
 
         // A payload at/under the threshold still round-trips (single-put path).
         let small = vec![7u8; 64];
-        store.put_bytes("vertex/small.bin", small.clone()).await.unwrap();
-        assert_eq!(&store.get_bytes("vertex/small.bin").await.unwrap()[..], &small[..]);
+        store
+            .put_bytes("vertex/small.bin", small.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            &store.get_bytes("vertex/small.bin").await.unwrap()[..],
+            &small[..]
+        );
     }
 
     #[tokio::test]
@@ -298,10 +328,16 @@ mod storage_tests {
 
         // A many-row batch whose encoded Parquet comfortably exceeds a 4 KiB
         // threshold, forcing write_chunk through put_multipart.
-        let schema = Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Int64, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            ArrowDataType::Int64,
+            false,
+        )]));
         let batch = RecordBatch::try_new(
             schema,
-            vec![Arc::new(Int64Array::from((0..50_000i64).collect::<Vec<_>>()))],
+            vec![Arc::new(Int64Array::from(
+                (0..50_000i64).collect::<Vec<_>>(),
+            ))],
         )
         .unwrap();
 
@@ -309,7 +345,10 @@ mod storage_tests {
             .with_multipart(MultipartOptions::new(4 * 1024, 8 * 1024));
 
         let rel = "vertex/person/id/chunk0.parquet";
-        store.write_chunk(rel, &[batch], &FileType::Parquet).await.unwrap();
+        store
+            .write_chunk(rel, &[batch], &FileType::Parquet)
+            .await
+            .unwrap();
         let back = store.read_chunk(rel, &FileType::Parquet).await.unwrap();
         let rows: usize = back.iter().map(|b| b.num_rows()).sum();
         assert_eq!(rows, 50_000, "multipart-written chunk must read back fully");
@@ -380,8 +419,14 @@ mod storage_tests {
         let dir = tempdir().unwrap();
         let url = format!("file://{}", dir.path().display());
         let store = ChunkStore::from_url_with_retry(&url, RetryOptions::none()).unwrap();
-        store.put_bytes("meta/graph.yml", b"name: g".to_vec()).await.unwrap();
-        assert_eq!(&store.get_bytes("meta/graph.yml").await.unwrap()[..], b"name: g");
+        store
+            .put_bytes("meta/graph.yml", b"name: g".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            &store.get_bytes("meta/graph.yml").await.unwrap()[..],
+            b"name: g"
+        );
     }
 }
 
@@ -389,9 +434,9 @@ mod storage_tests {
 mod io_tests {
     use crate::{
         metadata::{Property, PropertyGroup, VertexInfo},
+        reader::VertexReader,
         types::FileType,
         writer::{PropertyValue, Vertex, VerticesBuilder},
-        reader::VertexReader,
     };
     use tempfile::tempdir;
 
@@ -568,7 +613,10 @@ mod validate_tests {
         // --- validator passes (no errors) ---
         let issues = validate_graph_dir(base.join("social.graph.yml"));
         let errs = errors(&issues);
-        assert!(errs.is_empty(), "round-trip graph should validate cleanly, got: {errs:?}");
+        assert!(
+            errs.is_empty(),
+            "round-trip graph should validate cleanly, got: {errs:?}"
+        );
     }
 
     #[test]
@@ -579,7 +627,8 @@ mod validate_tests {
         let issues = validate_vertex_info(&vi, dir.path(), &ValidateOptions::default());
         let errs = errors(&issues);
         assert!(
-            errs.iter().any(|e| e.contains("vertex chunk") && e.contains("missing")),
+            errs.iter()
+                .any(|e| e.contains("vertex chunk") && e.contains("missing")),
             "missing chunk dir must be an error, got: {errs:?}"
         );
     }
@@ -595,7 +644,10 @@ mod validate_tests {
         vb.dump().unwrap();
         let issues = validate_vertex_info(&vi, base, &ValidateOptions::default());
         let errs = errors(&issues);
-        assert!(errs.iter().any(|e| e.contains("version")), "bad version, got: {errs:?}");
+        assert!(
+            errs.iter().any(|e| e.contains("version")),
+            "bad version, got: {errs:?}"
+        );
     }
 
     #[test]
@@ -642,7 +694,9 @@ mod validate_tests {
         let dir = tempdir().unwrap();
         let issues = validate_vertex_info(&vi, dir.path(), &ValidateOptions::default());
         assert!(
-            errors(&issues).iter().any(|e| e.contains("primary properties")),
+            errors(&issues)
+                .iter()
+                .any(|e| e.contains("primary properties")),
             "two primaries must be an error, got: {:?}",
             errors(&issues)
         );
@@ -662,10 +716,14 @@ mod validate_tests {
         // Drop a stray file into the chunk dir.
         std::fs::write(base.join("vertex/person/id/README.txt"), b"stray").unwrap();
         let issues = validate_vertex_info(&vi, base, &ValidateOptions::default());
-        assert!(errors(&issues).is_empty(), "stray file must not be an error");
         assert!(
-            issues.iter().any(|i| i.severity == Severity::Warning
-                && i.message.contains("unexpected file")),
+            errors(&issues).is_empty(),
+            "stray file must not be an error"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.severity == Severity::Warning && i.message.contains("unexpected file")),
             "stray file should be a warning"
         );
     }
@@ -740,12 +798,17 @@ mod validate_tests {
             total_errors.len(),
             total_errors.join("\n")
         );
-        assert!(validated > 0, "expected to validate at least one gar/v1 corpus graph");
+        assert!(
+            validated > 0,
+            "expected to validate at least one gar/v1 corpus graph"
+        );
         eprintln!("validated {validated} corpus graphs cleanly ({skipped} skipped)");
     }
 
     fn collect_graph_ymls(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in rd.flatten() {
             let path = entry.path();
             if path.is_dir() {

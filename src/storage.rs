@@ -76,13 +76,21 @@ impl Default for RetryOptions {
 impl RetryOptions {
     /// Disable retries entirely (single attempt per operation).
     pub fn none() -> Self {
-        Self { max_retries: 0, ..Self::default() }
+        Self {
+            max_retries: 0,
+            ..Self::default()
+        }
     }
 
     /// A bounded policy: at most `max_retries` retries with exponential backoff
     /// from `init_backoff` (doubling, base 2) capped at `max_backoff`.
     pub fn new(max_retries: usize, init_backoff: Duration, max_backoff: Duration) -> Self {
-        Self { max_retries, init_backoff, max_backoff, ..Self::default() }
+        Self {
+            max_retries,
+            init_backoff,
+            max_backoff,
+            ..Self::default()
+        }
     }
 }
 
@@ -147,7 +155,10 @@ impl MultipartOptions {
     /// Explicit threshold + part size. `part_size` is clamped to at least 1 to
     /// avoid a zero-length part loop.
     pub fn new(threshold: usize, part_size: usize) -> Self {
-        Self { threshold, part_size: part_size.max(1) }
+        Self {
+            threshold,
+            part_size: part_size.max(1),
+        }
     }
 }
 
@@ -241,7 +252,11 @@ pub struct ChunkStore {
 impl ChunkStore {
     /// Wrap an existing `object_store` instance.
     pub fn new(store: Arc<dyn ObjectStore>, prefix: impl Into<StorePath>) -> Self {
-        Self { store, prefix: prefix.into(), multipart: MultipartOptions::default() }
+        Self {
+            store,
+            prefix: prefix.into(),
+            multipart: MultipartOptions::default(),
+        }
     }
 
     /// Override the [multipart-upload policy](MultipartOptions) (builder style).
@@ -295,7 +310,9 @@ impl ChunkStore {
 
         let store: Arc<dyn ObjectStore> = match scheme {
             ObjectStoreScheme::AmazonS3 => {
-                let mut b = AmazonS3Builder::new().with_url(url.as_str()).with_retry(retry);
+                let mut b = AmazonS3Builder::new()
+                    .with_url(url.as_str())
+                    .with_retry(retry);
                 for (k, v) in env() {
                     if let Ok(key) = k.to_ascii_lowercase().parse() {
                         b = b.with_config(key, v);
@@ -304,8 +321,9 @@ impl ChunkStore {
                 Arc::new(b.build()?)
             }
             ObjectStoreScheme::GoogleCloudStorage => {
-                let mut b =
-                    GoogleCloudStorageBuilder::new().with_url(url.as_str()).with_retry(retry);
+                let mut b = GoogleCloudStorageBuilder::new()
+                    .with_url(url.as_str())
+                    .with_retry(retry);
                 for (k, v) in env() {
                     if let Ok(key) = k.to_ascii_lowercase().parse() {
                         b = b.with_config(key, v);
@@ -314,8 +332,9 @@ impl ChunkStore {
                 Arc::new(b.build()?)
             }
             ObjectStoreScheme::MicrosoftAzure => {
-                let mut b =
-                    MicrosoftAzureBuilder::new().with_url(url.as_str()).with_retry(retry);
+                let mut b = MicrosoftAzureBuilder::new()
+                    .with_url(url.as_str())
+                    .with_retry(retry);
                 for (k, v) in env() {
                     if let Ok(key) = k.to_ascii_lowercase().parse() {
                         b = b.with_config(key, v);
@@ -325,7 +344,9 @@ impl ChunkStore {
             }
             ObjectStoreScheme::Http => {
                 let base = &url[..url::Position::BeforePath];
-                let mut b = HttpBuilder::new().with_url(base.to_string()).with_retry(retry);
+                let mut b = HttpBuilder::new()
+                    .with_url(base.to_string())
+                    .with_retry(retry);
                 for (k, v) in env() {
                     if let Ok(key) = k.to_ascii_lowercase().parse() {
                         b = b.with_config(key, v);
@@ -340,7 +361,11 @@ impl ChunkStore {
                 Arc::from(store)
             }
         };
-        Ok(Self { store, prefix, multipart: MultipartOptions::default() })
+        Ok(Self {
+            store,
+            prefix,
+            multipart: MultipartOptions::default(),
+        })
     }
 
     /// Local filesystem store rooted at `root`.

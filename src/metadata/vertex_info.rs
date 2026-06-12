@@ -59,15 +59,23 @@ impl VertexInfo {
     pub fn chunk_path(&self, group: &PropertyGroup, chunk_index: u64) -> PathBuf {
         PathBuf::from(&self.prefix)
             .join(group.dir_name())
-            .join(format!("chunk{}.{}", chunk_index, group.file_type.extension()))
+            .join(format!(
+                "chunk{}.{}",
+                chunk_index,
+                group.file_type.extension()
+            ))
     }
 
     pub fn find_property_group(&self, property_name: &str) -> Option<&PropertyGroup> {
-        self.property_groups.iter().find(|g| g.has_property(property_name))
+        self.property_groups
+            .iter()
+            .find(|g| g.has_property(property_name))
     }
 
     pub fn primary_key_group(&self) -> Option<&PropertyGroup> {
-        self.property_groups.iter().find(|g| g.primary_key().is_some())
+        self.property_groups
+            .iter()
+            .find(|g| g.primary_key().is_some())
     }
 
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {

@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::{Path, PathBuf}, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use arrow_array::{
     ArrayRef, RecordBatch,
@@ -91,7 +95,10 @@ impl VerticesBuilder {
 }
 
 /// Exposed for edge writer reuse.
-pub fn build_record_batch_for_edges(vertices: &[Vertex], group: &PropertyGroup) -> Result<RecordBatch> {
+pub fn build_record_batch_for_edges(
+    vertices: &[Vertex],
+    group: &PropertyGroup,
+) -> Result<RecordBatch> {
     build_record_batch(vertices, group)
 }
 

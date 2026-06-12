@@ -1,7 +1,7 @@
 use std::{fs::File, path::Path};
 
-use arrow_array::RecordBatch;
 use arrow::ipc::{reader::FileReader, writer::FileWriter};
+use arrow_array::RecordBatch;
 
 use crate::error::Result;
 

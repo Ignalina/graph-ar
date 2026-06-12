@@ -5,8 +5,8 @@ use std::{
     sync::Arc,
 };
 
-use arrow_array::RecordBatch;
 use arrow::json::{LineDelimitedWriter, ReaderBuilder, reader::infer_json_schema};
+use arrow_array::RecordBatch;
 
 use crate::error::Result;
 
