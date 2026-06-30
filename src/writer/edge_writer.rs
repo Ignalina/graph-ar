@@ -154,7 +154,8 @@ impl EdgesBuilder {
 
             // Write offset chunk for ordered adj lists.
             if self.adj_type.is_ordered() {
-                let offset_batch = build_offset_batch(&chunk_edges, v_start, v_end, vchunk_size)?;
+                let offset_batch =
+                    build_offset_batch(&chunk_edges, v_start, v_end, vchunk_size, aligned_by_src)?;
                 let offset_path = self
                     .base_dir
                     .join(self.info.offset_chunk_path(&self.adj_type, vc)?);
@@ -188,14 +189,19 @@ fn build_offset_batch(
     v_start: u64,
     v_end: u64,
     _vchunk_size: u64,
+    aligned_by_src: bool,
 ) -> Result<RecordBatch> {
     let count = (v_end - v_start) as usize + 1;
     let mut offsets = vec![0i64; count];
     // Histogram: count edges per vertex slot, then prefix-sum.
     let mut hist = vec![0i64; (v_end - v_start) as usize];
     for edge in chunk_edges {
-        // Use src as the key (this fn is called for both src/dst ordered; caller picks edges).
-        let slot = (edge.src as u64).saturating_sub(v_start) as usize;
+        // Key the histogram on the same vertex dimension the adj list is aligned
+        // by — `src` for *_by_source, `dst` for *_by_dest. Mirrors the `key`
+        // closure used in `dump()`; using `src` unconditionally would bucket
+        // ordered_by_dest offsets against the wrong dimension.
+        let key_id = if aligned_by_src { edge.src } else { edge.dst };
+        let slot = (key_id as u64).saturating_sub(v_start) as usize;
         if slot < hist.len() {
             hist[slot] += 1;
         }
@@ -217,6 +223,61 @@ fn build_offset_batch(
         schema,
         vec![Arc::new(Int64Array::from(offsets))],
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::Array;
+
+    fn offsets_of(batch: &RecordBatch) -> Vec<i64> {
+        batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .values()
+            .to_vec()
+    }
+
+    #[test]
+    fn offset_batch_keys_on_dst_for_ordered_by_dest() {
+        // An OrderedByDest chunk is aligned/sorted by `dst`; the offset
+        // histogram must bucket on `dst`, not `src`.
+        //
+        // FAIL-ON-BUG: the old code keyed on `edge.src` unconditionally. Here
+        // every `src` (100) is outside [v_start, v_end) = [0, 3), so the buggy
+        // path drops all edges and yields all-zero offsets. PASS-ON-FIX: keying
+        // on `dst` produces the correct prefix sums.
+        let edges = vec![
+            Edge::new(100, 0),
+            Edge::new(100, 0),
+            Edge::new(100, 1),
+            Edge::new(100, 2),
+        ];
+        let refs: Vec<&Edge> = edges.iter().collect();
+
+        // aligned_by_src = false → key on dst.
+        let batch = build_offset_batch(&refs, 0, 3, 4, false).unwrap();
+        assert_eq!(
+            offsets_of(&batch),
+            vec![0, 2, 3, 4],
+            "ordered_by_dest offsets must be the dst-keyed prefix sum",
+        );
+
+        // Sanity: keying on src (aligned_by_src = true) drops every edge here.
+        let buggy = build_offset_batch(&refs, 0, 3, 4, true).unwrap();
+        assert_eq!(offsets_of(&buggy), vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn offset_batch_keys_on_src_for_ordered_by_source() {
+        // The by-source path is unchanged: bucket on `src`.
+        let edges = vec![Edge::new(0, 9), Edge::new(1, 9), Edge::new(1, 9)];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        let batch = build_offset_batch(&refs, 0, 2, 4, true).unwrap();
+        assert_eq!(offsets_of(&batch), vec![0, 1, 3]);
+    }
 }
 
 fn build_edge_prop_batch(edges: &[&Edge], group: &PropertyGroup) -> Result<RecordBatch> {

@@ -30,11 +30,13 @@ impl DataType {
             DataType::Date => ArrowDataType::Date32,
             DataType::Timestamp => ArrowDataType::Timestamp(TimeUnit::Millisecond, None),
             DataType::Time => ArrowDataType::Time64(TimeUnit::Millisecond),
-            DataType::List => ArrowDataType::List(std::sync::Arc::new(Field::new(
-                "item",
-                ArrowDataType::Utf8,
-                true,
-            ))),
+            // List properties are serialized by the writer as JSON strings
+            // (see `build_record_batch` in writer/vertex_writer.rs, which builds
+            // a Utf8 StringArray for `DataType::List`). The Arrow schema field
+            // must therefore also be Utf8, otherwise `RecordBatch::try_new`
+            // rejects the batch with a column-type mismatch and the graph cannot
+            // be written.
+            DataType::List => ArrowDataType::Utf8,
         };
         Field::new(field_name, dt, nullable)
     }
