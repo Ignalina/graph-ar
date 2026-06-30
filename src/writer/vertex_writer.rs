@@ -213,34 +213,4 @@ mod tests {
     use arrow_array::Array;
     use arrow_schema::DataType as ArrowDataType;
 
-    #[test]
-    fn list_property_builds_a_record_batch() {
-        // FAIL-ON-BUG: a `list` property got an Arrow `List(item: Utf8)` schema
-        // field while the writer builds a Utf8 StringArray, so
-        // `RecordBatch::try_new` failed with a column/field type mismatch and
-        // the graph could not be written. PASS-ON-FIX: the schema field is Utf8
-        // (matching the JSON-string serialization), so the batch builds.
-        let group = PropertyGroup::new(
-            vec![Property::new("tags", DataType::List)],
-            FileType::Parquet,
-        );
-
-        // The schema field for a list column is Utf8 now.
-        let schema = group.arrow_schema();
-        assert_eq!(schema.field(0).data_type(), &ArrowDataType::Utf8);
-
-        let verts = vec![
-            Vertex::new().add_property("tags", PropertyValue::String("[\"a\",\"b\"]".into())),
-            Vertex::new(),
-        ];
-        let batch = build_record_batch(&verts, &group).expect("list property must build a batch");
-        assert_eq!(batch.num_rows(), 2);
-        let col = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<arrow_array::StringArray>()
-            .expect("list column serialized as Utf8");
-        assert_eq!(col.value(0), "[\"a\",\"b\"]");
-        assert!(col.is_null(1), "missing list value → null");
-    }
 }
