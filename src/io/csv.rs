@@ -1,4 +1,9 @@
-use std::{fs::File, io::BufWriter, path::Path, sync::Arc};
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+    path::Path,
+    sync::Arc,
+};
 
 use arrow_array::RecordBatch;
 use arrow_csv::{ReaderBuilder, WriterBuilder};
@@ -32,5 +37,9 @@ pub fn write(path: impl AsRef<Path>, batches: &[RecordBatch]) -> Result<()> {
     for batch in batches {
         writer.write(batch)?;
     }
+    // Flush the BufWriter explicitly so a flush error (e.g. ENOSPC) surfaces as
+    // an `Err` here rather than being silently swallowed when the BufWriter is
+    // dropped. This mirrors `json::write`'s explicit drain.
+    writer.into_inner().flush()?;
     Ok(())
 }

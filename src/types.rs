@@ -30,11 +30,13 @@ impl DataType {
             DataType::Date => ArrowDataType::Date32,
             DataType::Timestamp => ArrowDataType::Timestamp(TimeUnit::Millisecond, None),
             DataType::Time => ArrowDataType::Time64(TimeUnit::Millisecond),
-            DataType::List => ArrowDataType::List(std::sync::Arc::new(Field::new(
-                "item",
-                ArrowDataType::Utf8,
-                true,
-            ))),
+            // A `list` property is serialized to a single JSON-encoded `Utf8`
+            // string (see `vertex_writer::build_record_batch`), so the Arrow
+            // field must be `Utf8` to match the `StringBuilder` that fills it.
+            // Declaring it as `List(Utf8)` here previously made every write of a
+            // list property fail in `RecordBatch::try_new` (schema field `List`
+            // vs `Utf8` array).
+            DataType::List => ArrowDataType::Utf8,
         };
         Field::new(field_name, dt, nullable)
     }

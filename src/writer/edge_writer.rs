@@ -154,7 +154,8 @@ impl EdgesBuilder {
 
             // Write offset chunk for ordered adj lists.
             if self.adj_type.is_ordered() {
-                let offset_batch = build_offset_batch(&chunk_edges, v_start, v_end, vchunk_size)?;
+                let offset_batch =
+                    build_offset_batch(&chunk_edges, v_start, v_end, aligned_by_src)?;
                 let offset_path = self
                     .base_dir
                     .join(self.info.offset_chunk_path(&self.adj_type, vc)?);
@@ -187,15 +188,19 @@ fn build_offset_batch(
     chunk_edges: &[&Edge],
     v_start: u64,
     v_end: u64,
-    _vchunk_size: u64,
+    aligned_by_src: bool,
 ) -> Result<RecordBatch> {
     let count = (v_end - v_start) as usize + 1;
     let mut offsets = vec![0i64; count];
     // Histogram: count edges per vertex slot, then prefix-sum.
     let mut hist = vec![0i64; (v_end - v_start) as usize];
     for edge in chunk_edges {
-        // Use src as the key (this fn is called for both src/dst ordered; caller picks edges).
-        let slot = (edge.src as u64).saturating_sub(v_start) as usize;
+        // Bucket by the *alignment* id: `src` for OrderedBySource, `dst` for
+        // OrderedByDest. Using `src` unconditionally (the previous bug) produced
+        // garbage offsets for the OrderedByDest path, where chunks are aligned by
+        // destination vertex.
+        let id = if aligned_by_src { edge.src } else { edge.dst };
+        let slot = (id as u64).saturating_sub(v_start) as usize;
         if slot < hist.len() {
             hist[slot] += 1;
         }

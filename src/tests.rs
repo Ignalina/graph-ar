@@ -823,3 +823,248 @@ mod validate_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod edge_writer_tests {
+    use arrow_array::Int64Array;
+    use tempfile::tempdir;
+
+    use crate::{
+        metadata::{AdjListInfo, EdgeInfo},
+        reader::EdgeReader,
+        types::{AdjListType, FileType},
+        writer::{Edge, EdgesBuilder},
+    };
+
+    fn ordered_by_dest_edge_info() -> EdgeInfo {
+        EdgeInfo::new("person", "knows", "person", 1024, 100, 100, false).with_adj_list(
+            AdjListInfo {
+                ordered: true,
+                aligned_by: "dst".into(),
+                file_type: FileType::Parquet,
+                prefix: None,
+            },
+        )
+    }
+
+    /// The `OrderedByDest` adjacency path builds its CSR offset array bucketed by
+    /// *destination* vertex. A previous bug bucketed by `edge.src` regardless of
+    /// alignment, so every offset for a dst-ordered chunk collapsed to zero.
+    /// Round-trip a known fan-in and assert the per-dst prefix sums.
+    #[test]
+    fn ordered_by_dest_offsets_count_edges_per_dst() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let ei = ordered_by_dest_edge_info();
+
+        // Fan-in (deliberately src != dst so the old src-keyed bug is exposed):
+        //   dst 0: 0 edges, dst 1: 2 edges, dst 2: 1 edge, dst 3: 3 edges.
+        // Expected CSR offsets (prefix sums, leading 0): [0, 0, 2, 3, 6].
+        let dst_vertex_count = 4u64;
+        let mut eb = EdgesBuilder::new(ei.clone(), base, AdjListType::OrderedByDest, dst_vertex_count);
+        for (src, dst) in [(10, 1), (11, 1), (20, 2), (30, 3), (31, 3), (32, 3)] {
+            eb.add_edge(Edge::new(src, dst));
+        }
+        eb.dump().unwrap();
+
+        let reader = EdgeReader::new(ei, base, 100, dst_vertex_count);
+        let batches = reader
+            .read_offset(&AdjListType::OrderedByDest, 0)
+            .unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 5, "offset rows = dst_count + 1");
+
+        let offsets: Vec<i64> = batches
+            .iter()
+            .flat_map(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(
+            offsets,
+            vec![0, 0, 2, 3, 6],
+            "per-dst CSR offsets must be bucketed by destination vertex"
+        );
+    }
+}
+
+#[cfg(test)]
+mod list_property_tests {
+    use arrow_array::StringArray;
+    use tempfile::tempdir;
+
+    use crate::{
+        metadata::{Property, PropertyGroup, VertexInfo},
+        reader::VertexReader,
+        types::{DataType, FileType},
+        writer::{PropertyValue, Vertex, VerticesBuilder},
+    };
+
+    /// A `list`-typed property is serialized to a single JSON `Utf8` string. The
+    /// Arrow field for it must therefore be `Utf8`; declaring it as `List(Utf8)`
+    /// (the previous bug) made `RecordBatch::try_new` reject the `StringBuilder`
+    /// array. Assert a `list` property write+reads back losslessly.
+    #[test]
+    fn list_property_round_trips_as_json_string() {
+        let dir = tempdir().unwrap();
+        let vi = VertexInfo::new("person", 10)
+            .with_property_group(PropertyGroup::new(
+                vec![Property::new("id", DataType::Int64).primary()],
+                FileType::Parquet,
+            ))
+            .with_property_group(PropertyGroup::new(
+                vec![Property::new("tags", DataType::List)],
+                FileType::Parquet,
+            ));
+
+        let payloads = ["[\"a\",\"b\"]", "[]", "[\"solo\"]"];
+        let mut vb = VerticesBuilder::new(vi.clone(), dir.path());
+        for (i, p) in payloads.iter().enumerate() {
+            vb.add_vertex(
+                Vertex::new()
+                    .add_property("id", PropertyValue::Int64(i as i64))
+                    .add_property("tags", PropertyValue::String((*p).to_string())),
+            );
+        }
+        // Previously this `dump` errored on the schema/array mismatch.
+        vb.dump().unwrap();
+
+        let reader = VertexReader::new(vi.clone(), dir.path(), payloads.len() as u64);
+        let group = vi.property_groups[1].clone();
+        let batches = reader.read_property_group(&group).unwrap();
+        let read_back: Vec<String> = batches
+            .iter()
+            .flat_map(|b| {
+                let col = b
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                (0..b.num_rows()).map(|r| col.value(r).to_string()).collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(read_back, payloads);
+    }
+}
+
+#[cfg(test)]
+mod csv_io_tests {
+    use std::sync::Arc;
+
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType as ArrowDataType, Field, Schema};
+    use tempfile::tempdir;
+
+    use crate::{io, types::FileType};
+
+    /// CSV write→read must preserve the actual cell values, not merely the row
+    /// count, and the writer flushes its `BufWriter` explicitly so a flush error
+    /// surfaces as `Err` (matching `json::write`) instead of being swallowed on
+    /// drop.
+    #[test]
+    fn csv_write_read_preserves_values() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("chunk0.csv");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", ArrowDataType::Int64, false),
+            Field::new("name", ArrowDataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["alice", "bob", "carol"])),
+            ],
+        )
+        .unwrap();
+
+        io::write_chunk(&path, std::slice::from_ref(&batch), &FileType::Csv).unwrap();
+        let back = io::read_chunk(&path, &FileType::Csv).unwrap();
+
+        let ids: Vec<i64> = back
+            .iter()
+            .flat_map(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        let names: Vec<String> = back
+            .iter()
+            .flat_map(|b| {
+                let c = b.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+                (0..b.num_rows()).map(|r| c.value(r).to_string()).collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(names, vec!["alice", "bob", "carol"]);
+    }
+}
+
+#[cfg(test)]
+mod empty_slice_contract_tests {
+    use std::sync::Arc;
+
+    use arrow_array::{Int64Array, RecordBatch};
+    use arrow_schema::{DataType as ArrowDataType, Field, Schema};
+
+    use crate::{storage::write_chunk_bytes, types::FileType};
+
+    const ALL: [FileType; 5] = [
+        FileType::Parquet,
+        FileType::Csv,
+        FileType::Json,
+        FileType::Orc,
+        FileType::ArrowIpc,
+    ];
+
+    /// Documented contract: encoding an *empty slice* of batches (`&[]`) writes
+    /// nothing — `write_chunk_bytes` returns zero bytes for every format (and
+    /// `io::write_chunk` likewise creates no file, see
+    /// `format_matrix_tests::empty_write_is_noop`). A caller that needs a file to
+    /// exist must pass at least one (possibly zero-row) batch.
+    #[test]
+    fn write_chunk_bytes_empty_slice_yields_no_bytes() {
+        for ft in ALL {
+            let bytes = write_chunk_bytes(&[], &ft).unwrap();
+            assert!(bytes.is_empty(), "{ft:?}: &[] must encode to zero bytes");
+        }
+    }
+
+    /// Contrast: passing a real (even zero-row) batch is *not* the same as `&[]`.
+    /// The schema-bearing/columnar formats (Parquet, Orc, Arrow IPC) and CSV (a
+    /// header row) emit bytes; line-delimited JSON emits nothing for zero rows.
+    /// Documenting this as data pins the per-format contract.
+    #[test]
+    fn write_chunk_bytes_zero_row_batch_per_format() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            ArrowDataType::Int64,
+            false,
+        )]));
+        let empty_batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(Vec::<i64>::new()))])
+                .unwrap();
+        for ft in ALL {
+            let bytes = write_chunk_bytes(std::slice::from_ref(&empty_batch), &ft).unwrap();
+            let nonempty = bytes.is_empty();
+            match ft {
+                // Line-delimited JSON writes one line per row, so zero rows → no bytes.
+                FileType::Json => assert!(bytes.is_empty(), "Json zero-row should be empty"),
+                // CSV writes a header; Parquet/Orc/IPC write schema/footer metadata.
+                _ => assert!(
+                    !bytes.is_empty(),
+                    "{ft:?}: a zero-row batch still encodes a schema/header (nonempty={nonempty})"
+                ),
+            }
+        }
+    }
+}
