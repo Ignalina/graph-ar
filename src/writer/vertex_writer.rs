@@ -7,7 +7,8 @@ use std::{
 use arrow_array::{
     ArrayRef, RecordBatch,
     builder::{
-        BooleanBuilder, Float32Builder, Float64Builder, Int32Builder, Int64Builder, StringBuilder,
+        BooleanBuilder, Float32Builder, Float64Builder, Int32Builder, Int64Builder, ListBuilder,
+        StringBuilder,
     },
 };
 
@@ -33,6 +34,10 @@ pub enum PropertyValue {
     Float(f32),
     Double(f64),
     String(String),
+    /// A variable-length list of strings, written as an Arrow `List<Utf8>`
+    /// matching the schema declared by [`DataType::List`]. An empty `Vec`
+    /// yields an empty (non-null) list; a missing property yields a null list.
+    List(Vec<String>),
 }
 
 impl Vertex {
@@ -175,11 +180,19 @@ fn build_record_batch(vertices: &[Vertex], group: &PropertyGroup) -> Result<Reco
                 Arc::new(b.finish())
             }
             DataType::List => {
-                // Serialize list items as JSON strings for now.
-                let mut b = StringBuilder::with_capacity(rows, 0);
+                // `DataType::List` declares an Arrow `List<Utf8>` (item field),
+                // so build a real ListArray. Each `PropertyValue::List` becomes
+                // one (possibly empty) list slot; a missing key or a non-list
+                // variant becomes a null list, mirroring the scalar arms above.
+                let mut b = ListBuilder::new(StringBuilder::with_capacity(rows, 0));
                 for v in vertices {
                     match v.get(name) {
-                        Some(PropertyValue::String(s)) => b.append_value(s.as_str()),
+                        Some(PropertyValue::List(items)) => {
+                            for item in items {
+                                b.values().append_value(item.as_str());
+                            }
+                            b.append(true);
+                        }
                         _ => b.append_null(),
                     }
                 }

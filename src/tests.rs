@@ -469,6 +469,66 @@ mod io_tests {
         assert_eq!(total_rows, 25);
     }
 
+    // FAIL-ON-BUG / PASS-ON-FIX: before the fix, `DataType::List` declared an
+    // Arrow `List<Utf8>` schema but the writer emitted a flat `Utf8` column and
+    // there was no `PropertyValue::List` variant — so writing a list property
+    // either panicked in `RecordBatch::try_new` (schema/column type mismatch)
+    // or was simply unrepresentable. This proves real list values round-trip.
+    #[test]
+    fn write_and_read_list_property() {
+        use arrow_array::{Array, ListArray, StringArray, cast::AsArray};
+
+        let dir = tempdir().unwrap();
+        let vi = VertexInfo::new("person", 10).with_property_group(PropertyGroup::new(
+            vec![
+                Property::new("id", crate::types::DataType::Int64).primary(),
+                Property::new("tags", crate::types::DataType::List),
+            ],
+            FileType::Parquet,
+        ));
+
+        let mut builder = VerticesBuilder::new(vi.clone(), dir.path());
+        // row 0: two items, row 1: empty list, row 2: missing -> null list.
+        builder.add_vertex(
+            Vertex::new()
+                .add_property("id", PropertyValue::Int64(0))
+                .add_property(
+                    "tags",
+                    PropertyValue::List(vec!["alpha".to_string(), "beta".to_string()]),
+                ),
+        );
+        builder.add_vertex(
+            Vertex::new()
+                .add_property("id", PropertyValue::Int64(1))
+                .add_property("tags", PropertyValue::List(Vec::new())),
+        );
+        builder.add_vertex(Vertex::new().add_property("id", PropertyValue::Int64(2)));
+        builder.dump().unwrap();
+
+        let reader = VertexReader::new(vi, dir.path(), 10);
+        let merged = reader.read_merged().unwrap();
+        assert_eq!(merged.num_rows(), 3);
+
+        let tags_idx = merged.schema().index_of("tags").unwrap();
+        // The column must be an Arrow List, not a flat Utf8 (the old bug).
+        let col = merged.column(tags_idx);
+        let lists: &ListArray = col.as_list_opt::<i32>().expect("tags must be a ListArray");
+
+        // row 0: ["alpha", "beta"]
+        assert!(!lists.is_null(0));
+        let r0 = lists.value(0);
+        let r0 = r0.as_any().downcast_ref::<StringArray>().unwrap();
+        let r0: Vec<&str> = (0..r0.len()).map(|i| r0.value(i)).collect();
+        assert_eq!(r0, vec!["alpha", "beta"]);
+
+        // row 1: empty (non-null) list
+        assert!(!lists.is_null(1));
+        assert_eq!(lists.value(1).len(), 0);
+
+        // row 2: null list (missing property)
+        assert!(lists.is_null(2));
+    }
+
     #[test]
     fn merge_property_groups_round_trip() {
         let dir = tempdir().unwrap();
