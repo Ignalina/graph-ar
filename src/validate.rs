@@ -190,6 +190,20 @@ pub fn validate_graph_info(
         }
     }
 
+    // Emit the gar/v1 validation surface's health into the nornir matrix: a
+    // graph with no `Error`-severity issues is conformant (green); warnings
+    // alone still pass.
+    let errors = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .count();
+    crate::functional_status(
+        "graphar/validate",
+        "graph_info",
+        errors == 0,
+        &format!("{} ({errors} error(s), {} issue(s))", gi.name, issues.len()),
+    );
+
     issues
 }
 

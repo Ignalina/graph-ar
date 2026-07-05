@@ -455,8 +455,19 @@ impl ChunkStore {
         batches: &[RecordBatch],
         file_type: &FileType,
     ) -> Result<()> {
-        let payload = write_chunk_bytes(batches, file_type)?;
-        self.put_object(rel, payload).await
+        let result = async {
+            let payload = write_chunk_bytes(batches, file_type)?;
+            self.put_object(rel, payload).await
+        }
+        .await;
+        // Emit the gar/v1 chunk-write surface's health into the nornir matrix.
+        crate::functional_status(
+            "graphar/chunk_store",
+            "write_chunk",
+            result.is_ok(),
+            rel,
+        );
+        result
     }
 
     /// Raw byte fetch (info YAML files, offsets, …).

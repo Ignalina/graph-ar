@@ -6,7 +6,20 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# `testmatrix` — emit each functional surface's health (the gar/v1 ChunkStore
+# write path + the graph-info validator) into the nornir test-matrix via
+# `functional_status`. OFF BY DEFAULT: a compiled-out `#[inline]` no-op with no
+# nornir dep. Turn on with `--features testmatrix` (pulls nornir-testmatrix's
+# own `testmatrix` mode).
+testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
+
 [dependencies]
+# Introspection-marker emitter — only compiled with `testmatrix`. Path (the
+# workspace `[patch.crates-io]` also resolves it) to the local nornir-testmatrix
+# 0.2, which carries the `functional_status` emitter + the `testmatrix` gate.
+nornir-testmatrix = { path = "../../../nornir/crates/nornir-testmatrix", version = "0.2", default-features = false, optional = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
