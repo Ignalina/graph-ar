@@ -571,13 +571,93 @@ mod io_tests {
 }
 
 #[cfg(test)]
+mod merge_tests {
+    use std::sync::Arc;
+
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType as ArrowDataType, Field, Schema};
+
+    use crate::merge::merge_property_groups;
+
+    /// A one-column batch `col` = `values`, for building crafted property groups.
+    fn int_group(col: &str, values: Vec<i64>) -> Vec<RecordBatch> {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            col,
+            ArrowDataType::Int64,
+            false,
+        )]));
+        vec![RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(values))]).unwrap()]
+    }
+
+    fn str_group(col: &str, values: Vec<&str>) -> Vec<RecordBatch> {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            col,
+            ArrowDataType::Utf8,
+            false,
+        )]));
+        vec![RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(values))]).unwrap()]
+    }
+
+    #[test]
+    fn merge_property_groups_zips_groups() {
+        // Two row-aligned groups with distinct columns zip into one batch that
+        // carries all columns, in the order the groups were given.
+        let id = int_group("id", vec![1, 2, 3]);
+        let name = str_group("name", vec!["a", "b", "c"]);
+        let merged = merge_property_groups(&[id, name]).unwrap();
+        assert_eq!(merged.num_rows(), 3);
+        assert_eq!(merged.num_columns(), 2);
+        let names: Vec<_> = merged
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, vec!["id", "name"]);
+    }
+
+    #[test]
+    fn merge_property_groups_rejects_empty() {
+        // No groups at all, and a single all-empty group, both yield the same
+        // "no batches to merge" error (nothing survives the flatten).
+        let err = merge_property_groups(&[]).unwrap_err().to_string();
+        assert!(err.contains("no batches to merge"), "got: {err}");
+
+        let empty: Vec<Vec<RecordBatch>> = vec![vec![]];
+        let err = merge_property_groups(&empty).unwrap_err().to_string();
+        assert!(err.contains("no batches to merge"), "got: {err}");
+    }
+
+    #[test]
+    fn merge_property_groups_rejects_row_mismatch() {
+        // Groups covering a different number of rows cannot be zipped.
+        let a = int_group("id", vec![1, 2, 3]);
+        let b = int_group("age", vec![10, 20]);
+        let err = merge_property_groups(&[a, b]).unwrap_err().to_string();
+        assert!(err.contains("row count mismatch"), "got: {err}");
+    }
+
+    #[test]
+    fn merge_property_groups_rejects_duplicate_column() {
+        // GraphAr forbids the same property name in two groups.
+        let a = int_group("id", vec![1, 2, 3]);
+        let b = int_group("id", vec![4, 5, 6]);
+        let err = merge_property_groups(&[a, b]).unwrap_err().to_string();
+        assert!(err.contains("duplicate column"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
 mod validate_tests {
     use std::path::Path;
 
     use crate::{
         metadata::{AdjListInfo, EdgeInfo, GraphInfo, Property, PropertyGroup, VertexInfo},
         types::{AdjListType, DataType, FileType},
-        validate::{Severity, ValidateOptions, validate_graph_dir, validate_vertex_info},
+        validate::{
+            Severity, ValidateOptions, validate_edge_info, validate_graph_dir,
+            validate_vertex_info,
+        },
         writer::{Edge, EdgesBuilder, PropertyValue, Vertex, VerticesBuilder},
     };
     use tempfile::tempdir;
@@ -617,6 +697,61 @@ mod validate_tests {
                 vec![Property::new("creationDate", DataType::String)],
                 FileType::Parquet,
             ))
+    }
+
+    /// Dump a conformant ordered-by-source `knows` edge layout under `base` and
+    /// return the `EdgeInfo` describing it. Shared by the edge-validator tests.
+    fn dump_knows_edges(base: &Path) -> EdgeInfo {
+        let ei = knows_edge_info();
+        let mut eb = EdgesBuilder::new(ei.clone(), base, AdjListType::OrderedBySource, 25);
+        for i in 0..24i64 {
+            eb.add_edge(
+                Edge::new(i, i + 1)
+                    .add_property("creationDate", PropertyValue::String(format!("2020-{i}"))),
+            );
+        }
+        eb.dump().unwrap();
+        ei
+    }
+
+    #[test]
+    fn validate_edge_info_accepts_conformant_partitioned_edge() {
+        // A freshly-dumped ordered-by-source edge (adj_list + offset + property
+        // partitions all present) must validate with zero errors when
+        // validate_edge_info is called directly.
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let ei = dump_knows_edges(base);
+        let issues = validate_edge_info(&ei, base, &ValidateOptions::default());
+        let errs = errors(&issues);
+        assert!(
+            errs.is_empty(),
+            "conformant partitioned edge should validate cleanly, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn validate_edge_info_flags_missing_adjlist_chunks() {
+        // Remove ONLY the adj_list partition subtree from an otherwise
+        // conformant layout: exactly one Error issue naming that missing path.
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let ei = dump_knows_edges(base);
+        let adj_list_dir = base.join("edge/person_knows_person/ordered_by_source/adj_list");
+        assert!(adj_list_dir.exists(), "sanity: adj_list dumped");
+        std::fs::remove_dir_all(&adj_list_dir).unwrap();
+
+        let issues = validate_edge_info(&ei, base, &ValidateOptions::default());
+        let errs = errors(&issues);
+        assert_eq!(
+            errs.len(),
+            1,
+            "removing adj_list yields exactly one error, got: {errs:?}"
+        );
+        assert!(
+            errs[0].contains("adj_list"),
+            "the error names the missing adj_list path, got: {errs:?}"
+        );
     }
 
     /// Build a small graph with the public builders, dump it, then assert the
