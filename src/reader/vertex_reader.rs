@@ -68,9 +68,31 @@ impl VertexReader {
 
     /// Read the given property groups and merge them into one batch.
     pub fn read_merged_groups(&self, groups: &[PropertyGroup]) -> Result<RecordBatch> {
-        let per_group: Result<Vec<_>> =
-            groups.iter().map(|g| self.read_property_group(g)).collect();
-        crate::merge::merge_property_groups(&per_group?)
+        let per_group = match groups
+            .iter()
+            .map(|g| self.read_property_group(g))
+            .collect::<Result<Vec<_>>>()
+        {
+            Ok(v) => v,
+            Err(e) => {
+                // Emit the vertex-load read path's health into the nornir matrix.
+                crate::functional_status(
+                    "graphar/vertex_reader",
+                    "read_merged",
+                    false,
+                    "property-group chunk read failed",
+                );
+                return Err(e);
+            }
+        };
+        let merged = crate::merge::merge_property_groups(&per_group);
+        crate::functional_status(
+            "graphar/vertex_reader",
+            "read_merged",
+            merged.is_ok(),
+            &format!("{} groups over {} chunks", groups.len(), self.chunk_count()),
+        );
+        merged
     }
 
     /// Read chunks for the property group containing the named property.

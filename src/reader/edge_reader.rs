@@ -71,6 +71,13 @@ impl EdgeReader {
             all.append(&mut batches);
             edge_chunk += 1;
         }
+        // Emit the adjacency-list load path's health into the nornir matrix.
+        crate::functional_status(
+            "graphar/edge_reader",
+            "read_adj_list",
+            true,
+            &format!("{edge_chunk} edge chunks for vertex_chunk {vertex_chunk}"),
+        );
         Ok(all)
     }
 
