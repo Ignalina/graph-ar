@@ -19,7 +19,7 @@ testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
 # Introspection-marker emitter — only compiled with `testmatrix`. Path (the
 # workspace `[patch.crates-io]` also resolves it) to the local nornir-testmatrix
 # 0.2, which carries the `functional_status` emitter + the `testmatrix` gate.
-nornir-testmatrix = { path = "../../../nornir/crates/nornir-testmatrix", version = "0.2", default-features = false, optional = true }
+nornir-testmatrix = { version = "0.2", default-features = false, optional = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
