@@ -204,13 +204,3 @@ fn build_record_batch(vertices: &[Vertex], group: &PropertyGroup) -> Result<Reco
 
     Ok(RecordBatch::try_new(schema, columns)?)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::metadata::Property;
-    use crate::types::FileType;
-    use arrow_array::Array;
-    use arrow_schema::DataType as ArrowDataType;
-
-}

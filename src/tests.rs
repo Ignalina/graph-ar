@@ -1089,20 +1089,6 @@ mod edge_writer_tests {
 }
 
 #[cfg(test)]
-mod list_property_tests {
-    use arrow_array::StringArray;
-    use tempfile::tempdir;
-
-    use crate::{
-        metadata::{Property, PropertyGroup, VertexInfo},
-        reader::VertexReader,
-        types::{DataType, FileType},
-        writer::{PropertyValue, Vertex, VerticesBuilder},
-    };
-
-}
-
-#[cfg(test)]
 mod csv_io_tests {
     use std::sync::Arc;
 
