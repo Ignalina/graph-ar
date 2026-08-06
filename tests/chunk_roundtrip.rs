@@ -12,8 +12,8 @@ use std::time::Instant;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use bytes::Bytes;
-use graphar::storage::{read_chunk_bytes, write_chunk_bytes};
 use graphar::FileType;
+use graphar::storage::{read_chunk_bytes, write_chunk_bytes};
 
 fn sample_batch(rows: usize) -> RecordBatch {
     let ids = Int64Array::from_iter_values(0..rows as i64);
@@ -48,7 +48,11 @@ fn chunk_roundtrip_all_filetypes_preserve_rows_and_columns() {
         let rows: usize = back.iter().map(|b| b.num_rows()).sum();
 
         assert_eq!(rows, total_rows, "{label}: row count drifted");
-        assert_eq!(back[0].num_columns(), ncols, "{label}: column count drifted");
+        assert_eq!(
+            back[0].num_columns(),
+            ncols,
+            "{label}: column count drifted"
+        );
 
         // remote-observable health cell (no-op unless `--features testmatrix`)
         graphar::functional_status("chunk_roundtrip", &label, true, "rows+cols preserved");

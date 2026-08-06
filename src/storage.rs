@@ -461,12 +461,7 @@ impl ChunkStore {
         }
         .await;
         // Emit the gar/v1 chunk-write surface's health into the nornir matrix.
-        crate::functional_status(
-            "graphar/chunk_store",
-            "write_chunk",
-            result.is_ok(),
-            rel,
-        );
+        crate::functional_status("graphar/chunk_store", "write_chunk", result.is_ok(), rel);
         result
     }
 

@@ -73,14 +73,28 @@ fn surfaces_record_green_and_red_rows() {
         .filter(|r| r.suite == "graphar/validate" && r.test_name == "graph_info")
         .collect();
     assert_eq!(greens.len(), 2, "two validate rows recorded; got {rows:?}");
-    assert!(status::is_green(&greens[0].status), "conformant graph is GREEN: {:?}", greens[0]);
+    assert!(
+        status::is_green(&greens[0].status),
+        "conformant graph is GREEN: {:?}",
+        greens[0]
+    );
     assert_eq!(greens[0].aspect, "functional");
-    assert!(status::is_red(&greens[1].status), "empty-name graph is RED: {:?}", greens[1]);
+    assert!(
+        status::is_red(&greens[1].status),
+        "empty-name graph is RED: {:?}",
+        greens[1]
+    );
 
     let write = rows
         .iter()
         .find(|r| r.suite == "graphar/chunk_store" && r.test_name == "write_chunk")
         .unwrap_or_else(|| panic!("write surface must record; got {rows:?}"));
-    assert!(status::is_green(&write.status), "a successful write is GREEN: {write:?}");
-    assert_eq!(write.message, "vertex/chunk0", "detail carries the chunk rel path");
+    assert!(
+        status::is_green(&write.status),
+        "a successful write is GREEN: {write:?}"
+    );
+    assert_eq!(
+        write.message, "vertex/chunk0",
+        "detail carries the chunk rel path"
+    );
 }

@@ -655,8 +655,7 @@ mod validate_tests {
         metadata::{AdjListInfo, EdgeInfo, GraphInfo, Property, PropertyGroup, VertexInfo},
         types::{AdjListType, DataType, FileType},
         validate::{
-            Severity, ValidateOptions, validate_edge_info, validate_graph_dir,
-            validate_vertex_info,
+            Severity, ValidateOptions, validate_edge_info, validate_graph_dir, validate_vertex_info,
         },
         writer::{Edge, EdgesBuilder, PropertyValue, Vertex, VerticesBuilder},
     };
@@ -1056,16 +1055,19 @@ mod edge_writer_tests {
         //   dst 0: 0 edges, dst 1: 2 edges, dst 2: 1 edge, dst 3: 3 edges.
         // Expected CSR offsets (prefix sums, leading 0): [0, 0, 2, 3, 6].
         let dst_vertex_count = 4u64;
-        let mut eb = EdgesBuilder::new(ei.clone(), base, AdjListType::OrderedByDest, dst_vertex_count);
+        let mut eb = EdgesBuilder::new(
+            ei.clone(),
+            base,
+            AdjListType::OrderedByDest,
+            dst_vertex_count,
+        );
         for (src, dst) in [(10, 1), (11, 1), (20, 2), (30, 3), (31, 3), (32, 3)] {
             eb.add_edge(Edge::new(src, dst));
         }
         eb.dump().unwrap();
 
         let reader = EdgeReader::new(ei, base, 100, dst_vertex_count);
-        let batches = reader
-            .read_offset(&AdjListType::OrderedByDest, 0)
-            .unwrap();
+        let batches = reader.read_offset(&AdjListType::OrderedByDest, 0).unwrap();
         let total: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total, 5, "offset rows = dst_count + 1");
 
@@ -1137,7 +1139,9 @@ mod csv_io_tests {
             .iter()
             .flat_map(|b| {
                 let c = b.column(1).as_any().downcast_ref::<StringArray>().unwrap();
-                (0..b.num_rows()).map(|r| c.value(r).to_string()).collect::<Vec<_>>()
+                (0..b.num_rows())
+                    .map(|r| c.value(r).to_string())
+                    .collect::<Vec<_>>()
             })
             .collect();
         assert_eq!(ids, vec![1, 2, 3]);
