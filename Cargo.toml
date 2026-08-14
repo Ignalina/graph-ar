@@ -9,6 +9,8 @@ repository.workspace = true
 
 [features]
 default = []
+# `orc` — the Apache ORC read/write arm. See the orc-rust dep for why it is off.
+orc = ["dep:orc-rust"]
 # `testmatrix` — emit each functional surface's health (the gar/v1 ChunkStore
 # write path + the graph-info validator) into the nornir test-matrix via
 # `functional_status`. OFF BY DEFAULT: a compiled-out `#[inline]` no-op with no
@@ -32,7 +34,10 @@ parquet = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
-orc-rust = "=0.8.0"
+# ORC is behind the `orc` feature, OFF by default. orc-rust 0.8.0 — its newest
+# release — requires arrow ^58.0 and has no arrow-59 release, so in the default
+# graph it pins graphar, knut and every downstream consumer (korp) to arrow 58.
+orc-rust = { version = "=0.8.0", optional = true }
 object_store = { workspace = true }
 bytes = { workspace = true }
 url = { workspace = true }

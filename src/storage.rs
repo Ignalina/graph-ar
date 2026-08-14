@@ -184,10 +184,16 @@ pub fn read_chunk_bytes(bytes: Bytes, file_type: &FileType) -> Result<Vec<Record
             let reader = arrow::json::ReaderBuilder::new(Arc::new(schema)).build(cursor)?;
             reader.map(|b| Ok(b?)).collect()
         }
+        #[cfg(feature = "orc")]
         FileType::Orc => {
             let reader = orc_rust::ArrowReaderBuilder::try_new(bytes)?.build();
             reader.map(|b| Ok(b?)).collect()
         }
+        #[cfg(not(feature = "orc"))]
+        FileType::Orc => Err(crate::error::GraphArError::from(std::io::Error::other(
+            "graphar was built without the `orc` feature — ORC is not compiled in. \
+             Rebuild with `--features orc` (note: it pins arrow 58).",
+        ))),
         FileType::ArrowIpc => {
             let reader = arrow::ipc::reader::FileReader::try_new(Cursor::new(bytes), None)?;
             reader.map(|b| Ok(b?)).collect()
@@ -223,12 +229,20 @@ pub fn write_chunk_bytes(batches: &[RecordBatch], file_type: &FileType) -> Resul
             writer.write_batches(&batches.iter().collect::<Vec<_>>())?;
             writer.finish()?;
         }
+        #[cfg(feature = "orc")]
         FileType::Orc => {
             let mut writer = orc_rust::ArrowWriterBuilder::new(&mut out, schema).try_build()?;
             for batch in batches {
                 writer.write(batch)?;
             }
             writer.close()?;
+        }
+        #[cfg(not(feature = "orc"))]
+        FileType::Orc => {
+            return Err(crate::error::GraphArError::from(std::io::Error::other(
+                "graphar was built without the `orc` feature — ORC is not compiled in. \
+                 Rebuild with `--features orc` (note: it pins arrow 58).",
+            )));
         }
         FileType::ArrowIpc => {
             let mut writer = arrow::ipc::writer::FileWriter::try_new(&mut out, &schema)?;

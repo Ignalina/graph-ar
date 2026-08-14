@@ -19,6 +19,7 @@ pub enum GraphArError {
     #[error("Parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
 
+    #[cfg(feature = "orc")]
     #[error("ORC error: {0}")]
     Orc(#[from] orc_rust::error::OrcError),
 
