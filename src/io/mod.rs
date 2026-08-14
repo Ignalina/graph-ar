@@ -20,7 +20,7 @@ pub fn read_chunk(path: impl AsRef<Path>, file_type: &FileType) -> Result<Vec<Re
         #[cfg(not(feature = "orc"))]
         FileType::Orc => Err(crate::error::GraphArError::from(std::io::Error::other(
             "graphar was built without the `orc` feature — ORC is not compiled in. \
-             Rebuild with `--features orc` (note: it pins arrow 58).",
+             Rebuild with `--features orc`.",
         ))),
         FileType::ArrowIpc => ipc::read(path),
     }
@@ -43,7 +43,7 @@ pub fn write_chunk(
         #[cfg(not(feature = "orc"))]
         FileType::Orc => Err(crate::error::GraphArError::from(std::io::Error::other(
             "graphar was built without the `orc` feature — ORC is not compiled in. \
-             Rebuild with `--features orc` (note: it pins arrow 58).",
+             Rebuild with `--features orc`.",
         ))),
         FileType::ArrowIpc => ipc::write(path, batches),
     }

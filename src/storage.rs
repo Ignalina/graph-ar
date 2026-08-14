@@ -192,7 +192,7 @@ pub fn read_chunk_bytes(bytes: Bytes, file_type: &FileType) -> Result<Vec<Record
         #[cfg(not(feature = "orc"))]
         FileType::Orc => Err(crate::error::GraphArError::from(std::io::Error::other(
             "graphar was built without the `orc` feature — ORC is not compiled in. \
-             Rebuild with `--features orc` (note: it pins arrow 58).",
+             Rebuild with `--features orc`.",
         ))),
         FileType::ArrowIpc => {
             let reader = arrow::ipc::reader::FileReader::try_new(Cursor::new(bytes), None)?;
@@ -241,7 +241,7 @@ pub fn write_chunk_bytes(batches: &[RecordBatch], file_type: &FileType) -> Resul
         FileType::Orc => {
             return Err(crate::error::GraphArError::from(std::io::Error::other(
                 "graphar was built without the `orc` feature — ORC is not compiled in. \
-                 Rebuild with `--features orc` (note: it pins arrow 58).",
+                 Rebuild with `--features orc`.",
             )));
         }
         FileType::ArrowIpc => {
