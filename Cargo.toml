@@ -34,13 +34,10 @@ parquet = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
-# ORC is behind the `orc` feature, OFF by default. orc-rust 0.8.0 — its newest
-# release — requires arrow ^58.0 and has no arrow-59 release. The workspace root
-# [patch.crates-io] redirects it to vendor/orc-rust-arrow59, a pure version bump
-# of the same 0.8.0 source, so turning `orc` on no longer drags a second arrow
-# major into graphar, knut or korp. Verified: `cargo tree -p graphar --features
-# orc` reports one arrow-array (v59).
-orc-rust = { version = "0.8.0", optional = true }
+# ORC is behind the `orc` feature, OFF by default. orc-rust 0.9.0 is the first
+# release on arrow ^59, so turning `orc` on adds no second arrow major (the old
+# vendor/orc-rust-arrow59 fork is retired).
+orc-rust = { version = "0.9", optional = true }
 object_store = { workspace = true }
 bytes = { workspace = true }
 url = { workspace = true }
