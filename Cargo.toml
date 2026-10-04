@@ -6,6 +6,11 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+# Development notes, agent instructions and machine-local tooling stay in the
+# repository; they are not part of the published crate.
+exclude = [
+    ".nornir/",
+]
 
 [features]
 default = []
