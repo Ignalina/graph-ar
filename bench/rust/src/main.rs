@@ -555,6 +555,25 @@ fn dir_bytes(dir: &Path) -> u64 {
 
 // ----------------------------------------------------------------------- read
 
+/// `BENCH_THREADS=n` caps the decode threads of the multi-chunk reads.
+fn bench_threads() -> Option<usize> {
+    std::env::var("BENCH_THREADS").ok()?.parse().ok()
+}
+
+fn vertex_threads(r: VertexReader) -> VertexReader {
+    match bench_threads() {
+        Some(n) => r.with_threads(n),
+        None => r,
+    }
+}
+
+fn edge_threads(r: EdgeReader) -> EdgeReader {
+    match bench_threads() {
+        Some(n) => r.with_threads(n),
+        None => r,
+    }
+}
+
 fn checksum_column(c: &dyn Array) -> u64 {
     match c.data_type() {
         ArrowDataType::Int64 => c
@@ -579,7 +598,7 @@ fn checksum_column(c: &dyn Array) -> u64 {
 fn read_prop(dir: &Path, prop: &str) -> R<()> {
     let (vi, _) = open_graph(dir)?;
     let start = Instant::now();
-    let vr = VertexReader::open(vi, dir)?;
+    let vr = vertex_threads(VertexReader::open(vi, dir)?);
     let batches = vr.read_by_property(prop)?;
     let secs = start.elapsed().as_secs_f64();
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
@@ -595,7 +614,7 @@ fn read_csr(dir: &Path) -> R<()> {
     let (_, ei) = open_graph(dir)?;
     let t = AdjListType::OrderedBySource;
     let start = Instant::now();
-    let er = EdgeReader::open(ei, dir, &t)?;
+    let er = edge_threads(EdgeReader::open(ei, dir, &t)?);
     let (offsets, indices) = er.read_csr(&t)?;
     let secs = start.elapsed().as_secs_f64();
     emit(
@@ -617,7 +636,7 @@ fn scan(dir: &Path) -> R<()> {
     let (vi, ei) = open_graph(dir)?;
     let t = AdjListType::OrderedBySource;
     let start = Instant::now();
-    let vr = VertexReader::open(vi.clone(), dir)?;
+    let vr = vertex_threads(VertexReader::open(vi.clone(), dir)?);
     let mut vrows = 0usize;
     let mut cells = 0u64;
     let mut sum = 0u64;
@@ -631,7 +650,7 @@ fn scan(dir: &Path) -> R<()> {
             }
         }
     }
-    let er = EdgeReader::open(ei.clone(), dir, &t)?;
+    let er = edge_threads(EdgeReader::open(ei.clone(), dir, &t)?);
     let mut erows = 0usize;
     for vc in 0..er_vertex_chunks(&er, &t) {
         for b in er.read_adj_list(&t, vc)? {
