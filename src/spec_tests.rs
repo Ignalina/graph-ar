@@ -472,6 +472,22 @@ version: gar/v1
     }
 
     #[test]
+    fn upstream_int32_offsets_are_read() {
+        // The Spark-written neo4j sample stores `_graphArOffset` as int32.
+        let Some(root) = testdata() else {
+            return;
+        };
+        let base = root.join("neo4j");
+        let ei = EdgeInfo::load(base.join("Person_ACTED_IN_Movie.edge.yml")).unwrap();
+        for t in [AdjListType::OrderedBySource, AdjListType::OrderedByDest] {
+            let er = EdgeReader::open(ei.clone(), &base, &t).unwrap();
+            let (offsets, indices) = er.read_csr(&t).unwrap();
+            assert_eq!(*offsets.last().unwrap() as usize, indices.len());
+            assert!(!indices.is_empty());
+        }
+    }
+
+    #[test]
     fn upstream_csv_properties_keep_declared_types() {
         // CSV carries no types; a string property that looks like a
         // timestamp must come back as the declared `string`.
