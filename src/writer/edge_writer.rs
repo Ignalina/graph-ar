@@ -16,7 +16,6 @@
 // under the License.
 
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -28,17 +27,20 @@ use crate::{
     error::{GraphArError, Result},
     general_params::{DST_INDEX_COL, OFFSET_COL, SRC_INDEX_COL},
     io,
-    metadata::{EdgeInfo, PropertyGroup},
+    metadata::EdgeInfo,
     types::AdjListType,
-    writer::vertex_writer::{PropertyValue, build_record_batch_for_edges},
+    writer::vertex_writer::{HasProperties, PropertyValue, build_record_batch_for_edges},
 };
 
 /// An edge with source/destination and optional properties.
+///
+/// Properties are a small `Vec`, not a `HashMap`: one allocation per edge and
+/// a linear scan over a few names (see `docs/perf.md`).
 #[derive(Debug, Clone)]
 pub struct Edge {
     pub src: i64,
     pub dst: i64,
-    properties: HashMap<String, PropertyValue>,
+    properties: Vec<(String, PropertyValue)>,
 }
 
 impl Edge {
@@ -46,17 +48,33 @@ impl Edge {
         Self {
             src,
             dst,
-            properties: HashMap::new(),
+            properties: Vec::new(),
         }
     }
 
+    /// Set a property; setting an existing name replaces its value.
     pub fn add_property(mut self, name: impl Into<String>, value: PropertyValue) -> Self {
-        self.properties.insert(name.into(), value);
+        let name = name.into();
+        if let Some(slot) = self.properties.iter_mut().find(|(n, _)| *n == name) {
+            slot.1 = value;
+        } else {
+            self.properties.push((name, value));
+        }
         self
     }
 
     pub fn get(&self, name: &str) -> Option<&PropertyValue> {
-        self.properties.get(name)
+        self.properties
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v)
+    }
+}
+
+impl HasProperties for Edge {
+    #[inline]
+    fn get_property(&self, name: &str) -> Option<&PropertyValue> {
+        self.get(name)
     }
 }
 
@@ -104,9 +122,8 @@ impl EdgesBuilder {
             Arc::new(Int64Array::from(srcs)),
             Arc::new(Int64Array::from(dsts)),
         ];
-        let refs: Vec<&Edge> = self.edges.iter().collect();
         for group in &self.info.property_groups {
-            let batch = build_edge_prop_batch(&refs, group)?;
+            let batch = build_record_batch_for_edges(&self.edges, group)?;
             fields.extend(batch.schema().fields().iter().map(|f| f.as_ref().clone()));
             columns.extend(batch.columns().iter().cloned());
         }
@@ -158,16 +175,12 @@ pub fn write_edge_table(
         (dst, src)
     };
 
-    // Sort (key, other, row) and keep the in-range rows; the row index makes
-    // the unstable sort deterministic.
-    let mut order: Vec<(u64, i64, u64)> = (0..edges.num_rows())
-        .filter(|&i| (key[i] as u64) < vertex_count)
-        .map(|i| (key[i] as u64, if ordered { other[i] } else { 0 }, i as u64))
-        .collect();
-    order.sort_unstable();
-    let perm = UInt64Array::from_iter_values(order.iter().map(|o| o.2));
-    let sorted_keys: Vec<u64> = order.iter().map(|o| o.0).collect();
-    drop(order);
+    // Counting sort by the aligned key (O(E + V), the keys are bounded by
+    // `vertex_count`), then each vertex's run by the other endpoint for
+    // ordered lists; `starts[v]` is where vertex v's edges begin, and it is
+    // also the offsets array. Out-of-range keys are dropped.
+    let (perm, starts) = sort_edges(key, other, vertex_count, ordered);
+    let perm = UInt64Array::from_iter_values(perm.into_iter().map(|i| i as u64));
     let take = |name: &str| -> Result<ArrayRef> {
         let col = edges
             .column_by_name(name)
@@ -207,11 +220,10 @@ pub fn write_edge_table(
     let edge_chunk_size = info.chunk_size as usize;
     let num_vertex_chunks = vertex_count.div_ceil(vchunk_size);
 
-    let mut lo = 0usize;
     for vc in 0..num_vertex_chunks {
         let v_start = vc * vchunk_size;
         let v_end = ((vc + 1) * vchunk_size).min(vertex_count);
-        let hi = lo + sorted_keys[lo..].partition_point(|&k| k < v_end);
+        let (lo, hi) = (starts[v_start as usize], starts[v_end as usize]);
 
         let mut ec = 0u64;
         let mut at = lo;
@@ -232,22 +244,81 @@ pub fn write_edge_table(
         }
 
         if ordered {
-            let offsets = build_offset_batch(&sorted_keys[lo..hi], v_start, v_end)?;
+            let offsets: Vec<i64> = starts[v_start as usize..=v_end as usize]
+                .iter()
+                .map(|&s| (s - lo) as i64)
+                .collect();
             let path = base.join(info.offset_chunk_path(adj_type, vc)?);
-            io::write_chunk(&path, &[offsets], &file_type)?;
+            io::write_chunk(&path, &[offset_batch_from(offsets)], &file_type)?;
         }
         io::write_count(
             base.join(info.edge_count_path(adj_type, vc)),
             (hi - lo) as u64,
         )?;
-        lo = hi;
     }
     io::write_count(base.join(info.vertex_count_path(adj_type)), vertex_count)?;
-    Ok(sorted_keys.len() as u64)
+    Ok(starts[vertex_count as usize] as u64)
+}
+
+/// Counting sort of the edge rows by `key` into a permutation, then (for
+/// ordered lists) each vertex's run by `other`.
+///
+/// Returns `(perm, starts)`: `perm` lists the kept rows (key `< vertex_count`)
+/// sorted by `(key, other)` — or by key with insertion order within a vertex
+/// when `ordered` is false — and `starts` has `vertex_count + 1` entries,
+/// `starts[v]..starts[v + 1]` being vertex v's range in `perm`. O(E + V) for
+/// the bucket pass plus O(Σ d_v log d_v) for the per-vertex runs; the edge
+/// columns are never moved, `take(perm)` gathers them once.
+pub(crate) fn sort_edges(
+    key: &[i64],
+    other: &[i64],
+    vertex_count: u64,
+    ordered: bool,
+) -> (Vec<usize>, Vec<usize>) {
+    let v = vertex_count as usize;
+    let mut starts = vec![0usize; v + 1];
+    for &k in key {
+        if (k as u64) < vertex_count {
+            starts[k as usize + 1] += 1;
+        }
+    }
+    for i in 1..=v {
+        starts[i] += starts[i - 1];
+    }
+    let mut perm = vec![0usize; starts[v]];
+    let mut next = starts.clone();
+    for (i, &k) in key.iter().enumerate() {
+        if (k as u64) < vertex_count {
+            perm[next[k as usize]] = i;
+            next[k as usize] += 1;
+        }
+    }
+    if ordered {
+        for w in starts.windows(2) {
+            let run = &mut perm[w[0]..w[1]];
+            if run.len() > 1 {
+                run.sort_unstable_by_key(|&i| (other[i], i));
+            }
+        }
+    }
+    (perm, starts)
+}
+
+fn offset_batch_from(offsets: Vec<i64>) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        OFFSET_COL,
+        ArrowDataType::Int64,
+        false,
+    )]));
+    RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(offsets))])
+        .expect("one non-null int64 column")
 }
 
 /// CSR offsets of one vertex chunk `[v_start, v_end)`: `v_end - v_start + 1`
-/// prefix sums over the (aligned-side) keys of the chunk's edges.
+/// prefix sums over the (aligned-side) keys of the chunk's edges. The plain
+/// reference; `write_edge_table` cuts offsets from `sort_edges`'s `starts`,
+/// and the tests pin the two to each other.
+#[cfg(test)]
 fn build_offset_batch(keys: &[u64], v_start: u64, v_end: u64) -> Result<RecordBatch> {
     let mut hist = vec![0i64; (v_end - v_start) as usize];
     for &k in keys {
@@ -272,24 +343,6 @@ fn build_offset_batch(keys: &[u64], v_start: u64, v_end: u64) -> Result<RecordBa
         schema,
         vec![Arc::new(Int64Array::from(offsets))],
     )?)
-}
-
-fn build_edge_prop_batch(edges: &[&Edge], group: &PropertyGroup) -> Result<RecordBatch> {
-    // Build pseudo-Vertex objects from edge properties for each property in the group.
-    let pseudo_vertices: Vec<crate::writer::vertex_writer::Vertex> = edges
-        .iter()
-        .map(|e| {
-            let mut v = crate::writer::vertex_writer::Vertex::new();
-            for prop in &group.properties {
-                if let Some(val) = e.get(&prop.name) {
-                    v = v.add_property(prop.name.clone(), val.clone());
-                }
-            }
-            v
-        })
-        .collect();
-
-    build_record_batch_for_edges(&pseudo_vertices, group)
 }
 
 #[cfg(test)]
@@ -318,5 +371,62 @@ mod tests {
     fn offset_batch_is_relative_to_chunk_start() {
         let batch = build_offset_batch(&[10, 11, 11], 10, 12).unwrap();
         assert_eq!(offsets_of(&batch), vec![0, 1, 3]);
+    }
+
+    /// Property test: `sort_edges` agrees with the plain tuple sort
+    /// `(key, other, row).sort_unstable()` on the permutation, and its
+    /// `starts` equals the histogram offsets, for random inputs with
+    /// out-of-range (dropped) keys.
+    #[test]
+    fn counting_sort_matches_plain_sort() {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for round in 0..300 {
+            let vertex_count = 1 + rnd() % 50;
+            let n = (rnd() % 300) as usize;
+            let ordered = rnd() % 2 == 0;
+            let key: Vec<i64> = (0..n)
+                .map(|_| {
+                    if rnd() % 20 == 0 {
+                        (rnd() % 100) as i64 - 50
+                    } else {
+                        (rnd() % vertex_count) as i64
+                    }
+                })
+                .collect();
+            let other: Vec<i64> = (0..n).map(|_| (rnd() % 7) as i64).collect();
+
+            let (perm, starts) = sort_edges(&key, &other, vertex_count, ordered);
+
+            let mut plain: Vec<(u64, i64, usize)> = (0..n)
+                .filter(|&i| (key[i] as u64) < vertex_count)
+                .map(|i| (key[i] as u64, if ordered { other[i] } else { 0 }, i))
+                .collect();
+            plain.sort_unstable();
+            let want: Vec<usize> = plain.iter().map(|p| p.2).collect();
+            assert_eq!(perm, want, "round {round} (ordered {ordered}): permutation");
+
+            let kept: Vec<u64> = plain.iter().map(|p| p.0).collect();
+            let hist = build_offset_batch(&kept, 0, vertex_count).unwrap();
+            let want: Vec<usize> = offsets_of(&hist).into_iter().map(|o| o as usize).collect();
+            assert_eq!(starts, want, "round {round}: starts");
+        }
+    }
+
+    #[test]
+    fn add_property_replaces_an_existing_name() {
+        let e = Edge::new(1, 2)
+            .add_property("w", PropertyValue::Int64(1))
+            .add_property("w", PropertyValue::Int64(2))
+            .add_property("x", PropertyValue::Bool(true));
+        assert!(matches!(e.get("w"), Some(PropertyValue::Int64(2))));
+        assert!(matches!(e.get("x"), Some(PropertyValue::Bool(true))));
+        assert!(e.get("missing").is_none());
+        assert_eq!(e.properties.len(), 2);
     }
 }

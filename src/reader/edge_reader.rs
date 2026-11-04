@@ -15,7 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::DataType;
@@ -36,7 +40,17 @@ pub struct EdgeReader {
     src_vertex_count: u64,
     /// Total number of destination vertices.
     dst_vertex_count: u64,
+    /// Decode threads for multi-chunk reads; `None` = the default cap.
+    threads: Option<usize>,
+    /// Parsed parquet footers of the chunk files touched by point lookups.
+    meta_cache: io::parquet::MetadataCache,
+    /// Decoded offset arrays per (adj dir, vertex chunk), filled by
+    /// [`edge_range`](Self::edge_range) on first use (8 B per vertex).
+    offsets: Mutex<OffsetsCache>,
 }
+
+/// Decoded offset arrays keyed by (adjacency dir name, vertex chunk).
+type OffsetsCache = HashMap<(&'static str, u64), Arc<Vec<i64>>>;
 
 impl EdgeReader {
     pub fn new(
@@ -50,7 +64,16 @@ impl EdgeReader {
             base_dir: base_dir.as_ref().to_path_buf(),
             src_vertex_count,
             dst_vertex_count,
+            threads: None,
+            meta_cache: io::parquet::MetadataCache::new(),
+            offsets: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Cap the decode threads used by the multi-chunk reads (`1` = serial).
+    pub fn with_threads(mut self, threads: usize) -> Self {
+        self.threads = Some(threads.max(1));
+        self
     }
 
     /// Open an edge type, taking the vertex counts from the `vertex_count`
@@ -96,7 +119,27 @@ impl EdgeReader {
         }
     }
 
-    /// Read all adjacency list chunks for a given vertex chunk.
+    /// The adjacency chunk files of a vertex chunk, in edge-chunk order.
+    fn adj_chunk_files(&self, adj_type: &AdjListType, vertex_chunk: u64) -> Result<Vec<PathBuf>> {
+        let info = self.info.get_adj_list_info(adj_type).ok_or_else(|| {
+            GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
+        })?;
+        let mut files = Vec::new();
+        while let Some(path) = io::resolve_chunk(
+            self.base_dir.join(self.info.adj_list_chunk_path(
+                adj_type,
+                vertex_chunk,
+                files.len() as u64,
+            )?),
+            &info.file_type,
+        ) {
+            files.push(path);
+        }
+        Ok(files)
+    }
+
+    /// Read all adjacency list chunks for a given vertex chunk. The chunk
+    /// files decode in parallel (see [`with_threads`](Self::with_threads)).
     pub fn read_adj_list(
         &self,
         adj_type: &AdjListType,
@@ -105,25 +148,177 @@ impl EdgeReader {
         let info = self.info.get_adj_list_info(adj_type).ok_or_else(|| {
             GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
         })?;
+        let files = self.adj_chunk_files(adj_type, vertex_chunk)?;
+        let per_file = super::par_map(files.len(), self.threads, |i| {
+            io::read_chunk(&files[i], &info.file_type)
+        })?;
+        Ok(per_file.into_iter().flatten().collect())
+    }
 
-        let mut all = Vec::new();
-        let mut edge_chunk = 0u64;
-        loop {
-            let Some(path) = io::resolve_chunk(
-                self.base_dir.join(self.info.adj_list_chunk_path(
-                    adj_type,
-                    vertex_chunk,
-                    edge_chunk,
-                )?),
-                &info.file_type,
-            ) else {
-                break;
-            };
-            let mut batches = io::read_chunk(&path, &info.file_type)?;
-            all.append(&mut batches);
-            edge_chunk += 1;
+    /// Every vertex chunk's adjacency list, `(vertex_chunk, batches)` in
+    /// order, all chunk files decoding in parallel. The parallel form of
+    /// [`iter_vertex_chunks`](Self::iter_vertex_chunks).
+    pub fn read_all_adj_lists(
+        &self,
+        adj_type: &AdjListType,
+    ) -> Result<Vec<(u64, Vec<RecordBatch>)>> {
+        let info = self.info.get_adj_list_info(adj_type).ok_or_else(|| {
+            GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
+        })?;
+        let vchunks = self.vertex_chunk_count(adj_type);
+        let mut jobs: Vec<(u64, PathBuf)> = Vec::new();
+        for vc in 0..vchunks {
+            for path in self.adj_chunk_files(adj_type, vc)? {
+                jobs.push((vc, path));
+            }
         }
-        Ok(all)
+        let decoded = super::par_map(jobs.len(), self.threads, |j| {
+            io::read_chunk(&jobs[j].1, &info.file_type)
+        })?;
+        let mut out: Vec<(u64, Vec<RecordBatch>)> =
+            (0..vchunks).map(|vc| (vc, Vec::new())).collect();
+        for ((vc, _), batches) in jobs.into_iter().zip(decoded) {
+            out[vc as usize].1.extend(batches);
+        }
+        Ok(out)
+    }
+
+    /// The decoded offset array of a vertex chunk (`vertex_chunk_size + 1`
+    /// entries, padding included), read once and kept.
+    fn offsets_of(&self, adj_type: &AdjListType, vertex_chunk: u64) -> Result<Arc<Vec<i64>>> {
+        let key = (adj_type.dir_name(), vertex_chunk);
+        if let Some(o) = self.offsets.lock().unwrap().get(&key) {
+            return Ok(o.clone());
+        }
+        let batches = self.read_offset(adj_type, vertex_chunk)?;
+        let mut off = Vec::new();
+        for b in &batches {
+            off.extend_from_slice(i64_col(b, OFFSET_COL)?.values());
+        }
+        let off = Arc::new(off);
+        self.offsets.lock().unwrap().insert(key, off.clone());
+        Ok(off)
+    }
+
+    /// The edge rows of vertex `v` in an ordered adjacency list:
+    /// `(vertex_chunk, begin, end)` where `[begin, end)` indexes the rows of
+    /// that vertex chunk's adjacency list (edge chunks concatenated).
+    ///
+    /// The vertex chunk's offset array is decoded on first touch and kept
+    /// (8 B per vertex of that chunk), so this is an array index afterwards:
+    /// `slot = v mod vertex_chunk_size`, range `offsets[slot]..offsets[slot + 1]`.
+    pub fn edge_range(&self, adj_type: &AdjListType, v: u64) -> Result<(u64, u64, u64)> {
+        if !adj_type.is_ordered() {
+            return Err(GraphArError::Other(
+                "edge_range needs an ordered adjacency list (offsets)".into(),
+            ));
+        }
+        let vchunk_size = if adj_type.aligned_by_src() {
+            self.info.src_chunk_size
+        } else {
+            self.info.dst_chunk_size
+        };
+        let (vc, slot) = (v / vchunk_size, (v % vchunk_size) as usize);
+        let off = self.offsets_of(adj_type, vc)?;
+        if slot + 1 >= off.len() {
+            return Err(GraphArError::Other(format!(
+                "offset chunk {vc} of {} has {} rows, vertex {v} needs slot {slot}",
+                adj_type.dir_name(),
+                off.len()
+            )));
+        }
+        Ok((vc, off[slot] as u64, off[slot + 1] as u64))
+    }
+
+    /// Rows `[begin, end)` of a vertex chunk's adjacency list, projected to
+    /// `columns` (`None` = both index columns). The range may span several
+    /// edge chunks; each is read through the pushdown path
+    /// ([`io::read_chunk_rows`]), O(pages touched).
+    pub fn read_adj_list_rows(
+        &self,
+        adj_type: &AdjListType,
+        vertex_chunk: u64,
+        begin: u64,
+        end: u64,
+        columns: Option<&[&str]>,
+    ) -> Result<Vec<RecordBatch>> {
+        let info = self.info.get_adj_list_info(adj_type).ok_or_else(|| {
+            GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
+        })?;
+        let mut out = Vec::new();
+        let mut row = begin;
+        while row < end {
+            let ec = row / self.info.chunk_size;
+            let in_chunk = row % self.info.chunk_size;
+            let take = (end - row).min(self.info.chunk_size - in_chunk);
+            let rel = self.info.adj_list_chunk_path(adj_type, vertex_chunk, ec)?;
+            let path = io::resolve_chunk(self.base_dir.join(&rel), &info.file_type)
+                .ok_or_else(|| GraphArError::ChunkOutOfRange(ec, 0))?;
+            out.extend(io::read_chunk_rows_cached(
+                &path,
+                &info.file_type,
+                in_chunk as usize,
+                take as usize,
+                columns,
+                Some(&self.meta_cache),
+            )?);
+            row += take;
+        }
+        Ok(out)
+    }
+
+    /// Rows `[begin, end)` of a property group of a vertex chunk's edges
+    /// (row-aligned with the adjacency list), projected to `columns`.
+    pub fn read_property_rows(
+        &self,
+        adj_type: &AdjListType,
+        group: &PropertyGroup,
+        vertex_chunk: u64,
+        begin: u64,
+        end: u64,
+        columns: Option<&[&str]>,
+    ) -> Result<Vec<RecordBatch>> {
+        let mut out = Vec::new();
+        let mut row = begin;
+        while row < end {
+            let ec = row / self.info.chunk_size;
+            let in_chunk = row % self.info.chunk_size;
+            let take = (end - row).min(self.info.chunk_size - in_chunk);
+            let rel = self
+                .info
+                .property_chunk_path(adj_type, group, vertex_chunk, ec);
+            let path = io::resolve_chunk(self.base_dir.join(&rel), &group.file_type)
+                .ok_or_else(|| GraphArError::ChunkOutOfRange(ec, 0))?;
+            out.extend(io::read_chunk_rows_cached(
+                &path,
+                &group.file_type,
+                in_chunk as usize,
+                take as usize,
+                columns,
+                Some(&self.meta_cache),
+            )?);
+            row += take;
+        }
+        Ok(out)
+    }
+
+    /// The neighbours of vertex `v`: the destination ids of its edges in an
+    /// ordered-by-source list, or the source ids in an ordered-by-dest list.
+    /// A point lookup through [`edge_range`](Self::edge_range) and
+    /// [`read_adj_list_rows`](Self::read_adj_list_rows): O(pages touched).
+    pub fn neighbors(&self, adj_type: &AdjListType, v: u64) -> Result<Vec<i64>> {
+        let (vc, begin, end) = self.edge_range(adj_type, v)?;
+        let col = if adj_type.aligned_by_src() {
+            DST_INDEX_COL
+        } else {
+            SRC_INDEX_COL
+        };
+        let rows = self.read_adj_list_rows(adj_type, vc, begin, end, Some(&[col]))?;
+        let mut out = Vec::new();
+        for b in &rows {
+            out.extend_from_slice(i64_col(b, col)?.values());
+        }
+        Ok(out)
     }
 
     /// Read the offset chunk for a vertex chunk (ordered adj lists only).
@@ -304,5 +499,168 @@ fn i64_col(b: &RecordBatch, name: &str) -> Result<Int64Array> {
         other => Err(GraphArError::Other(format!(
             "column `{name}` is {other}, not an integer index column"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        metadata::{AdjListInfo, Property, PropertyGroup},
+        types::{DataType, FileType},
+        writer::{Edge, EdgesBuilder, PropertyValue},
+    };
+
+    fn col(batches: &[RecordBatch], name: &str) -> Vec<i64> {
+        let mut out = Vec::new();
+        for b in batches {
+            out.extend_from_slice(i64_col(b, name).unwrap().values());
+        }
+        out
+    }
+
+    fn xorshift(seed: u64) -> impl FnMut() -> u64 {
+        let mut x = seed;
+        move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        }
+    }
+
+    fn small_info(vchunk: u64, echunk: u64, with_prop: bool) -> EdgeInfo {
+        let info =
+            EdgeInfo::new("a", "e", "a", echunk, vchunk, vchunk, true).with_adj_list(AdjListInfo {
+                ordered: true,
+                aligned_by: "src".into(),
+                file_type: FileType::Parquet,
+                prefix: None,
+            });
+        if with_prop {
+            info.with_property_group(PropertyGroup::new(
+                vec![Property::new("w", DataType::Int64)],
+                FileType::Parquet,
+            ))
+        } else {
+            info
+        }
+    }
+
+    /// Property test: for random small graphs (tiny chunks, so ranges cross
+    /// edge-chunk borders), `neighbors(v)` through the pushdown path equals
+    /// the plain full read + offset slice, for every vertex, and the property
+    /// rows line up with the adjacency rows.
+    #[test]
+    fn neighbors_pushdown_matches_plain_read() {
+        let mut rnd = xorshift(0xD1B5_4A32_D192_ED03);
+        for round in 0..30 {
+            let dir = tempfile::tempdir().unwrap();
+            let vertex_count = 1 + rnd() % 40;
+            let vchunk = 1 + rnd() % 8;
+            let echunk = 1 + rnd() % 6;
+            let info = small_info(vchunk, echunk, true);
+            let mut b = EdgesBuilder::new(
+                info.clone(),
+                dir.path(),
+                AdjListType::OrderedBySource,
+                vertex_count,
+            );
+            let n = rnd() % 200;
+            for i in 0..n {
+                let (s, d) = (rnd() % vertex_count, rnd() % vertex_count);
+                b.add_edge(
+                    Edge::new(s as i64, d as i64).add_property("w", PropertyValue::Int64(i as i64)),
+                );
+            }
+            b.dump().unwrap();
+
+            let r = EdgeReader::new(info.clone(), dir.path(), vertex_count, vertex_count);
+            let t = AdjListType::OrderedBySource;
+            for v in 0..vertex_count {
+                let vc = v / vchunk;
+                let off = col(&r.read_offset(&t, vc).unwrap(), OFFSET_COL);
+                let slot = (v % vchunk) as usize;
+                let (lo, hi) = (off[slot] as usize, off[slot + 1] as usize);
+                let adj = r.read_adj_list(&t, vc).unwrap();
+                let plain: Vec<i64> = col(&adj, DST_INDEX_COL)[lo..hi].to_vec();
+                assert!(
+                    col(&adj, SRC_INDEX_COL)[lo..hi]
+                        .iter()
+                        .all(|&s| s == v as i64),
+                    "round {round}: src column"
+                );
+
+                let fast = r.neighbors(&t, v).unwrap();
+                assert_eq!(fast, plain, "round {round}: neighbors of {v}");
+
+                let (vc2, b2, e2) = r.edge_range(&t, v).unwrap();
+                assert_eq!((vc2, b2 as usize, e2 as usize), (vc, lo, hi));
+                let group = &info.property_groups[0];
+                let w = col(
+                    &r.read_property_rows(&t, group, vc, b2, e2, None).unwrap(),
+                    "w",
+                );
+                let w_plain =
+                    col(&r.read_property_group(&t, group, vc).unwrap(), "w")[lo..hi].to_vec();
+                assert_eq!(w, w_plain, "round {round}: property rows of {v}");
+            }
+        }
+    }
+
+    /// Property test: parallel decode returns exactly what the serial path
+    /// returns, chunk by chunk, for random graphs with several edge chunks
+    /// per vertex chunk.
+    #[test]
+    fn parallel_reads_match_serial() {
+        let mut rnd = xorshift(0x2545_F491_4F6C_DD1D);
+        for round in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let vertex_count = 1 + rnd() % 30;
+            let vchunk = 1 + rnd() % 8;
+            let echunk = 1 + rnd() % 4;
+            let info = small_info(vchunk, echunk, false);
+            let mut b = EdgesBuilder::new(
+                info.clone(),
+                dir.path(),
+                AdjListType::OrderedBySource,
+                vertex_count,
+            );
+            for _ in 0..rnd() % 300 {
+                b.add_edge(Edge::new(
+                    (rnd() % vertex_count) as i64,
+                    (rnd() % vertex_count) as i64,
+                ));
+            }
+            b.dump().unwrap();
+            let t = AdjListType::OrderedBySource;
+            let serial = EdgeReader::new(info.clone(), dir.path(), vertex_count, vertex_count)
+                .with_threads(1);
+            let par = EdgeReader::new(info.clone(), dir.path(), vertex_count, vertex_count)
+                .with_threads(5);
+            let want: Vec<(u64, Vec<i64>, Vec<i64>)> = serial
+                .iter_vertex_chunks(&t)
+                .map(|r| {
+                    let (vc, b) = r.unwrap();
+                    (vc, col(&b, SRC_INDEX_COL), col(&b, DST_INDEX_COL))
+                })
+                .collect();
+            let got: Vec<(u64, Vec<i64>, Vec<i64>)> = par
+                .read_all_adj_lists(&t)
+                .unwrap()
+                .into_iter()
+                .map(|(vc, b)| (vc, col(&b, SRC_INDEX_COL), col(&b, DST_INDEX_COL)))
+                .collect();
+            assert_eq!(got, want, "round {round}: read_all_adj_lists");
+            for vc in 0..vertex_count.div_ceil(vchunk) {
+                let a = par.read_adj_list(&t, vc).unwrap();
+                let s = serial.read_adj_list(&t, vc).unwrap();
+                assert_eq!(
+                    col(&a, DST_INDEX_COL),
+                    col(&s, DST_INDEX_COL),
+                    "round {round}: chunk {vc}"
+                );
+            }
+        }
     }
 }

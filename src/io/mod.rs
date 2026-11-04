@@ -58,6 +58,67 @@ pub fn read_chunk_typed(
     }
 }
 
+/// Read rows `[offset, offset + limit)` of a chunk, projected to `columns`
+/// (all when `None`). Parquet gets the real pushdown ([`parquet::read_rows`]);
+/// the other formats read the chunk and slice it, so the result is the same
+/// and only the cost differs.
+pub fn read_chunk_rows(
+    path: impl AsRef<Path>,
+    file_type: &FileType,
+    offset: usize,
+    limit: usize,
+    columns: Option<&[&str]>,
+) -> Result<Vec<RecordBatch>> {
+    read_chunk_rows_cached(path, file_type, offset, limit, columns, None)
+}
+
+/// [`read_chunk_rows`] with an optional parquet [`parquet::MetadataCache`]
+/// for repeated lookups into the same files.
+pub fn read_chunk_rows_cached(
+    path: impl AsRef<Path>,
+    file_type: &FileType,
+    offset: usize,
+    limit: usize,
+    columns: Option<&[&str]>,
+    cache: Option<&parquet::MetadataCache>,
+) -> Result<Vec<RecordBatch>> {
+    if let FileType::Parquet = file_type {
+        return match cache {
+            Some(c) => c.read_rows(path, offset, limit, columns),
+            None => parquet::read_rows(path, offset, limit, columns),
+        };
+    }
+    let mut out = Vec::new();
+    let (mut skip, mut want) = (offset, limit);
+    for batch in read_chunk(path, file_type)? {
+        if want == 0 {
+            break;
+        }
+        let n = batch.num_rows();
+        if skip >= n {
+            skip -= n;
+            continue;
+        }
+        let take = (n - skip).min(want);
+        let mut b = batch.slice(skip, take);
+        if let Some(cols) = columns {
+            let idx = cols
+                .iter()
+                .map(|c| {
+                    b.schema()
+                        .index_of(c)
+                        .map_err(|_| crate::error::GraphArError::PropertyNotFound((*c).to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            b = b.project(&idx)?;
+        }
+        out.push(b);
+        skip = 0;
+        want -= take;
+    }
+    Ok(out)
+}
+
 /// `inferred` with the types of `declared` for the columns it names, and
 /// int64 for the reserved `_graphAr*` index columns.
 pub(crate) fn apply_declared_types(inferred: &Schema, declared: Option<&Schema>) -> Schema {

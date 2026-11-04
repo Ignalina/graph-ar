@@ -229,8 +229,8 @@ pub fn write_chunk_bytes(batches: &[RecordBatch], file_type: &FileType) -> Resul
         FileType::Parquet => {
             let mut writer = parquet::arrow::ArrowWriter::try_new(
                 &mut out,
-                schema,
-                Some(crate::io::parquet::writer_properties()),
+                schema.clone(),
+                Some(crate::io::parquet::writer_properties(&schema)),
             )?;
             for batch in batches {
                 writer.write(batch)?;
