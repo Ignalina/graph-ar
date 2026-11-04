@@ -213,6 +213,12 @@ impl EdgeReader {
                     Err(GraphArError::ChunkOutOfRange(..)) => vec![0; len + 1],
                     Err(e) => return Err(e),
                 };
+                // The C++ table writer pads the last chunk's offsets to
+                // chunk_size + 1 rows; the padding repeats the final offset.
+                let mut local = local;
+                if local.len() > len + 1 && local[len + 1..].iter().all(|&o| o == local[len]) {
+                    local.truncate(len + 1);
+                }
                 if local.len() != len + 1 {
                     return Err(GraphArError::Other(format!(
                         "offset chunk {vc}: expected {} rows, found {}",

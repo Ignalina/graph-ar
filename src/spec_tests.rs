@@ -282,15 +282,25 @@ version: gar/v1
         }
         eb.dump().unwrap();
         let path = base.join(ei.offset_chunk_path(&t, 2).unwrap());
-        let mut off = concat_i64(&io::read_chunk(&path, &FileType::Parquet).unwrap(), OFFSET_COL);
+        let mut off = concat_i64(
+            &io::read_chunk(&path, &FileType::Parquet).unwrap(),
+            OFFSET_COL,
+        );
         assert_eq!(off.len(), 6);
         let last = *off.last().unwrap();
         off.resize(11, last);
-        let schema = Arc::new(Schema::new(vec![Field::new(OFFSET_COL, ArrowDataType::Int64, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            OFFSET_COL,
+            ArrowDataType::Int64,
+            false,
+        )]));
         let b = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(off))]).unwrap();
         io::write_chunk(&path, &[b], &FileType::Parquet).unwrap();
 
-        let (offsets, indices) = EdgeReader::open(ei, base, &t).unwrap().read_csr(&t).unwrap();
+        let (offsets, indices) = EdgeReader::open(ei, base, &t)
+            .unwrap()
+            .read_csr(&t)
+            .unwrap();
         assert_eq!(offsets.len(), 26);
         assert_eq!(indices.len(), 24);
     }
