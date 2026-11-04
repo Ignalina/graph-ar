@@ -70,17 +70,17 @@ same as the columnar `write_edge_table` on the same data.
 
 | stage | before | after |
 |---|---|---|
-| write-vertices (row API) | 8 390 ms, 4.1 GB | 100M_WV |
-| write-edges (row API) | 95 242 ms, 75.4 GB | 100M_WE |
-| write-edges-table (columnar) | 32 025 ms, 7.3 GB | 100M_WT |
-| chunk files on disk | 833 MB | 100M_SIZE |
-| read-vertices | 866 ms | 100M_RVS serial, 100M_RV (8 threads) |
-| read-prop | 422 ms | 100M_RP |
-| read-adj (streaming) | 1 913 ms | 100M_RA |
-| read-adj-keep | - | 100M_RAK serial, 100M_RAP parallel |
-| read-offsets | 139 ms | 100M_RO |
-| neighbours, plain | 63 ms/query | 100M_NB |
-| neighbours, `neighbors()` | - | 100M_NP |
+| write-vertices (row API) | 8 390 ms, 4.1 GB | 5 204 ms, 3.8 GB |
+| write-edges (row API) | 95 242 ms, 75.4 GB | 53 804 ms, 39.7 GB |
+| write-edges-table (columnar) | 32 025 ms, 7.3 GB | 31 745 ms, 6.6 GB |
+| chunk files on disk | 833 MB | 305 MB |
+| read-vertices | 866 ms | 601 ms serial, 448 ms (8 threads) |
+| read-prop | 422 ms | 140 ms |
+| read-adj (streaming) | 1 913 ms | 850 ms |
+| read-adj-keep | - | 1 155 ms serial, 1 442 ms parallel (slower on this loaded host; memory-bound, see 5) |
+| read-offsets | 139 ms | 29.5 ms |
+| neighbours, plain | 63 ms/query | 32.5 ms/query |
+| neighbours, `neighbors()` | - | 83 µs/query |
 
 ### Lookup path, step by step (10M graph)
 
