@@ -24,7 +24,10 @@ pub mod parquet;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType as ArrowDataType, Field, Schema};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::{error::Result, types::FileType};
 
@@ -54,8 +57,36 @@ pub fn read_chunk_typed(
     match file_type {
         FileType::Csv => csv::read_typed(path, Some(declared)),
         FileType::Json => json::read_typed(path, Some(declared)),
+        // ORC timestamps come back as nanoseconds.
+        FileType::Orc => read_chunk(path, file_type)?
+            .iter()
+            .map(|b| cast_to_declared(b, declared))
+            .collect(),
         _ => read_chunk(path, file_type),
     }
+}
+
+/// `batch` with every column named in `declared` cast to the declared type.
+fn cast_to_declared(batch: &RecordBatch, declared: &Schema) -> Result<RecordBatch> {
+    let schema = batch.schema();
+    let mut fields = Vec::with_capacity(schema.fields().len());
+    let mut columns = Vec::with_capacity(schema.fields().len());
+    for (f, c) in schema.fields().iter().zip(batch.columns()) {
+        match declared.field_with_name(f.name()) {
+            Ok(d) if d.data_type() != f.data_type() => {
+                columns.push(arrow::compute::cast(c, d.data_type())?);
+                fields.push(f.as_ref().clone().with_data_type(d.data_type().clone()));
+            }
+            _ => {
+                columns.push(c.clone());
+                fields.push(f.as_ref().clone());
+            }
+        }
+    }
+    Ok(RecordBatch::try_new(
+        Arc::new(Schema::new(fields)),
+        columns,
+    )?)
 }
 
 /// Read rows `[offset, offset + limit)` of a chunk, projected to `columns`

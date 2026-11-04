@@ -20,8 +20,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{GraphArError, Result};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// A property's value type, as named in the info files: `bool`, `int32`,
+/// `int64`, `float`, `double`, `string`, `date`, `timestamp`, `time` and
+/// `list<T>`. A bare `list` (written by older versions of this crate) reads as
+/// `list<string>`; lists do not nest.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataType {
     Bool,
     Int32,
@@ -29,15 +32,57 @@ pub enum DataType {
     Float,
     Double,
     String,
+    /// Days since the UNIX epoch (Arrow `Date32`).
     Date,
+    /// Milliseconds since the UNIX epoch (Arrow `Timestamp(ms)`).
     Timestamp,
     Time,
-    List,
+    /// A variable-length list of a scalar type.
+    List(Box<DataType>),
 }
 
 impl DataType {
-    pub fn to_arrow(&self, field_name: &str, nullable: bool) -> Field {
-        let dt = match self {
+    /// The name used in info files.
+    pub fn name(&self) -> String {
+        match self {
+            DataType::Bool => "bool".into(),
+            DataType::Int32 => "int32".into(),
+            DataType::Int64 => "int64".into(),
+            DataType::Float => "float".into(),
+            DataType::Double => "double".into(),
+            DataType::String => "string".into(),
+            DataType::Date => "date".into(),
+            DataType::Timestamp => "timestamp".into(),
+            DataType::Time => "time".into(),
+            DataType::List(item) => format!("list<{}>", item.name()),
+        }
+    }
+
+    /// Parse a name from an info file.
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "bool" => DataType::Bool,
+            "int32" => DataType::Int32,
+            "int64" => DataType::Int64,
+            "float" => DataType::Float,
+            "double" => DataType::Double,
+            "string" => DataType::String,
+            "date" => DataType::Date,
+            "timestamp" => DataType::Timestamp,
+            "time" => DataType::Time,
+            "list" => DataType::List(Box::new(DataType::String)),
+            other => {
+                let item = other.strip_prefix("list<")?.strip_suffix('>')?;
+                match DataType::parse(item)? {
+                    DataType::List(_) => return None,
+                    scalar => DataType::List(Box::new(scalar)),
+                }
+            }
+        })
+    }
+
+    fn arrow_type(&self) -> ArrowDataType {
+        match self {
             DataType::Bool => ArrowDataType::Boolean,
             DataType::Int32 => ArrowDataType::Int32,
             DataType::Int64 => ArrowDataType::Int64,
@@ -47,18 +92,37 @@ impl DataType {
             DataType::Date => ArrowDataType::Date32,
             DataType::Timestamp => ArrowDataType::Timestamp(TimeUnit::Millisecond, None),
             DataType::Time => ArrowDataType::Time64(TimeUnit::Millisecond),
-            // A `list` property is written as a real Arrow `List<Utf8>` (see
-            // `build_record_batch` in writer/vertex_writer.rs, which fills a
-            // `ListBuilder<StringBuilder>`). The schema field must match that
-            // `List(item: Utf8, nullable)` exactly, or `RecordBatch::try_new`
-            // rejects the column.
-            DataType::List => ArrowDataType::List(std::sync::Arc::new(Field::new(
+            // The same `item` field the Arrow `ListBuilder`s of the row
+            // builders produce.
+            DataType::List(item) => ArrowDataType::List(std::sync::Arc::new(Field::new(
                 "item",
-                ArrowDataType::Utf8,
+                item.arrow_type(),
                 true,
             ))),
-        };
-        Field::new(field_name, dt, nullable)
+        }
+    }
+
+    pub fn to_arrow(&self, field_name: &str, nullable: bool) -> Field {
+        Field::new(field_name, self.arrow_type(), nullable)
+    }
+}
+
+impl Serialize for DataType {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for DataType {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        DataType::parse(&name)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown data type `{name}`")))
     }
 }
 

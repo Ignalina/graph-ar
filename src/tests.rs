@@ -953,11 +953,8 @@ mod validate_tests {
     /// (<https://github.com/apache/incubator-graphar-testing>, the `testing`
     /// submodule, or `GAR_TEST_DATA`). Never fetches over the network.
     ///
-    /// Two parts are skipped, not failed:
-    /// - the `java/` subtree, whose info files use a different (non-`gar/v1`)
-    ///   field schema (`label` instead of `type`);
-    /// - graphs whose info files use a parameterized list type (`list<float>`),
-    ///   which `DataType` does not model yet.
+    /// The `java/` subtree is skipped, not failed: its info files use a
+    /// different (non-`gar/v1`) field schema (`label` instead of `type`).
     #[test]
     fn corpus_validates() {
         let Some(root) = crate::tests::upstream_testing_dir() else {

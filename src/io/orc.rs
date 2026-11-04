@@ -15,12 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{fs::File, path::Path};
+use std::{fs::File, io::Write, path::Path};
 
 use arrow_array::RecordBatch;
-use orc_rust::{ArrowReaderBuilder, ArrowWriterBuilder};
+use arrow_schema::DataType;
+use orc_rust::{ArrowReaderBuilder, ArrowWriterBuilder, compression::CompressionType};
 
-use crate::error::Result;
+use crate::error::{GraphArError, Result};
 
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordBatch>> {
     let file = File::open(path)?;
@@ -36,8 +37,27 @@ pub fn write(path: impl AsRef<Path>, batches: &[RecordBatch]) -> Result<()> {
     if batches.is_empty() {
         return Ok(());
     }
-    let file = File::create(path)?;
-    let mut writer = ArrowWriterBuilder::new(file, batches[0].schema()).try_build()?;
+    write_to(File::create(path)?, batches)
+}
+
+/// Encode `batches` as ZSTD-compressed ORC. orc-rust 0.9 writes strings
+/// directly (it has no dictionary encoder) and has no list encoder: its
+/// `create_encoder` would panic, so list columns are refused here.
+pub(crate) fn write_to<W: Write>(out: W, batches: &[RecordBatch]) -> Result<()> {
+    let schema = batches[0].schema();
+    if let Some(f) = schema
+        .fields()
+        .iter()
+        .find(|f| matches!(f.data_type(), DataType::List(_)))
+    {
+        return Err(GraphArError::UnsupportedFileType(format!(
+            "ORC: the writer has no list encoder (column `{}`)",
+            f.name()
+        )));
+    }
+    let mut writer = ArrowWriterBuilder::new(out, schema)
+        .with_compression(CompressionType::Zstd)
+        .try_build()?;
     for batch in batches {
         writer.write(batch)?;
     }

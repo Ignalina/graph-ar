@@ -24,7 +24,7 @@ mod value_types {
 
     use arrow_array::{
         Array, ArrayRef, BooleanArray, Date32Array, Float32Array, Float64Array, Int32Array,
-        Int64Array, ListArray, RecordBatch, StringArray, TimestampMillisecondArray,
+        ListArray, RecordBatch, StringArray, TimestampMillisecondArray,
         cast::AsArray,
         types::{Float32Type, Int32Type, Int64Type},
     };
@@ -151,19 +151,32 @@ mod value_types {
         let n = (i % 3) as usize; // 0, 1 or 2 items
         let many = |f: &dyn Fn(usize) -> PropertyValue| (0..n).map(f).collect::<Vec<_>>();
         vec![
-            ("li", PropertyValue::List(many(&|k| PropertyValue::Int32(k as i32 + 1)))),
-            ("ll", PropertyValue::List(many(&|k| PropertyValue::Int64(k as i64 + 7)))),
-            ("lf", PropertyValue::List(many(&|k| PropertyValue::Float(k as f32 + 0.5)))),
-            ("ld", PropertyValue::List(many(&|k| PropertyValue::Double(k as f64 + 0.25)))),
-            ("ls", PropertyValue::List(many(&|k| PropertyValue::String(format!("x{k}"))))),
+            (
+                "li",
+                PropertyValue::List(many(&|k| PropertyValue::Int32(k as i32 + 1))),
+            ),
+            (
+                "ll",
+                PropertyValue::List(many(&|k| PropertyValue::Int64(k as i64 + 7))),
+            ),
+            (
+                "lf",
+                PropertyValue::List(many(&|k| PropertyValue::Float(k as f32 + 0.5))),
+            ),
+            (
+                "ld",
+                PropertyValue::List(many(&|k| PropertyValue::Double(k as f64 + 0.25))),
+            ),
+            (
+                "ls",
+                PropertyValue::List(many(&|k| PropertyValue::String(format!("x{k}")))),
+            ),
         ]
     }
 
     fn vertex_info(ft: FileType, lists: bool) -> VertexInfo {
-        let mut vi = VertexInfo::new("v", 4).with_property_group(PropertyGroup::new(
-            all_properties(),
-            ft.clone(),
-        ));
+        let mut vi = VertexInfo::new("v", 4)
+            .with_property_group(PropertyGroup::new(all_properties(), ft.clone()));
         if lists {
             vi = vi.with_property_group(PropertyGroup::new(list_properties(), ft));
         }
@@ -194,7 +207,12 @@ mod value_types {
         let f = f.as_any().downcast_ref::<Float32Array>().expect("float");
         assert_eq!(f.value(1), 1.5);
         let bo = c("b");
-        assert!(bo.as_any().downcast_ref::<BooleanArray>().expect("bool").value(0));
+        assert!(
+            bo.as_any()
+                .downcast_ref::<BooleanArray>()
+                .expect("bool")
+                .value(0)
+        );
     }
 
     fn check_lists(b: &RecordBatch) {
@@ -236,7 +254,10 @@ mod value_types {
             let dir = tempdir().unwrap();
             let vi = vertex_info(ft.clone(), true);
             dump(&vi, dir.path(), 10, true);
-            let b = VertexReader::open(vi, dir.path()).unwrap().read_merged().unwrap();
+            let b = VertexReader::open(vi, dir.path())
+                .unwrap()
+                .read_merged()
+                .unwrap();
             check_scalars(&b, 10);
             check_lists(&b);
         }
@@ -247,7 +268,10 @@ mod value_types {
         let dir = tempdir().unwrap();
         let vi = vertex_info(FileType::Csv, false);
         dump(&vi, dir.path(), 10, false);
-        let b = VertexReader::open(vi, dir.path()).unwrap().read_merged().unwrap();
+        let b = VertexReader::open(vi, dir.path())
+            .unwrap()
+            .read_merged()
+            .unwrap();
         check_scalars(&b, 10);
     }
 
@@ -257,7 +281,10 @@ mod value_types {
         let dir = tempdir().unwrap();
         let vi = vertex_info(FileType::Orc, false);
         dump(&vi, dir.path(), 10, false);
-        let b = VertexReader::open(vi, dir.path()).unwrap().read_merged().unwrap();
+        let b = VertexReader::open(vi, dir.path())
+            .unwrap()
+            .read_merged()
+            .unwrap();
         check_scalars(&b, 10);
     }
 
@@ -278,7 +305,10 @@ mod value_types {
                 .add_property("lf", PropertyValue::List(vec![PropertyValue::Int32(1)])),
         );
         vb.dump().unwrap();
-        let b = VertexReader::open(vi, dir.path()).unwrap().read_merged().unwrap();
+        let b = VertexReader::open(vi, dir.path())
+            .unwrap()
+            .read_merged()
+            .unwrap();
         assert!(b.column_by_name("day").unwrap().is_null(0));
         let lf = b.column_by_name("lf").unwrap().as_list::<i32>().clone();
         assert!(lf.value(0).is_null(0), "list item of the wrong type");
@@ -350,23 +380,31 @@ mod value_types {
             ))
         };
         let table = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("lf", lf.data_type().clone(), true)])),
+            Arc::new(Schema::new(vec![Field::new(
+                "lf",
+                lf.data_type().clone(),
+                true,
+            )])),
             vec![lf],
         )
         .unwrap();
         assert_eq!(write_vertex_table(&vi, dir.path(), &table).unwrap(), 3);
-        let b = VertexReader::open(vi, dir.path()).unwrap().read_merged().unwrap();
+        let b = VertexReader::open(vi, dir.path())
+            .unwrap()
+            .read_merged()
+            .unwrap();
         let col = b.column_by_name("lf").unwrap().as_list::<i32>().clone();
-        assert_eq!(col.value(1).as_primitive::<Float32Type>().values(), &[2.0, 3.0]);
+        assert_eq!(
+            col.value(1).as_primitive::<Float32Type>().values(),
+            &[2.0, 3.0]
+        );
     }
 
     #[test]
     fn lists_in_csv_are_an_error_not_a_panic() {
         let dir = tempdir().unwrap();
-        let vi = VertexInfo::new("v", 4).with_property_group(PropertyGroup::new(
-            list_properties(),
-            FileType::Csv,
-        ));
+        let vi = VertexInfo::new("v", 4)
+            .with_property_group(PropertyGroup::new(list_properties(), FileType::Csv));
         let mut vb = VerticesBuilder::new(vi, dir.path());
         vb.add_vertex(Vertex::new());
         assert!(vb.dump().is_err());
@@ -377,10 +415,8 @@ mod value_types {
     fn lists_in_orc_are_an_error_not_a_panic() {
         // orc-rust 0.9's writer has no list encoder (`unimplemented!`).
         let dir = tempdir().unwrap();
-        let vi = VertexInfo::new("v", 4).with_property_group(PropertyGroup::new(
-            list_properties(),
-            FileType::Orc,
-        ));
+        let vi = VertexInfo::new("v", 4)
+            .with_property_group(PropertyGroup::new(list_properties(), FileType::Orc));
         let mut vb = VerticesBuilder::new(vi, dir.path());
         vb.add_vertex(Vertex::new());
         let err = vb.dump().unwrap_err().to_string();
@@ -397,9 +433,16 @@ mod value_types {
         let vi = gi.all_vertex_infos(&base).unwrap().remove(0);
         let ty = &vi.find_property_group("feature").unwrap().properties[0].data_type;
         assert_eq!(ty, &list_of(DataType::Float));
-        let b = VertexReader::open(vi, &base).unwrap().read_merged().unwrap();
+        let b = VertexReader::open(vi, &base)
+            .unwrap()
+            .read_merged()
+            .unwrap();
         assert_eq!(b.num_rows(), 903);
-        let f = b.column_by_name("feature").unwrap().as_list::<i32>().clone();
+        let f = b
+            .column_by_name("feature")
+            .unwrap()
+            .as_list::<i32>()
+            .clone();
         assert!(!f.value(0).is_empty());
         assert_eq!(f.value(0).data_type(), &ArrowDataType::Float32);
     }
@@ -412,11 +455,22 @@ mod value_types {
         let base = root.join("ldbc_sample/parquet");
         let gi = GraphInfo::load(base.join("ldbc_sample_with_feature.graph.yml")).unwrap();
         let vi = gi.all_vertex_infos(&base).unwrap().remove(0);
-        let b = VertexReader::open(vi.clone(), &base).unwrap().read_merged().unwrap();
+        let b = VertexReader::open(vi.clone(), &base)
+            .unwrap()
+            .read_merged()
+            .unwrap();
         let dir = tempdir().unwrap();
         write_vertex_table(&vi, dir.path(), &b).unwrap();
-        let back = VertexReader::open(vi, dir.path()).unwrap().read_merged().unwrap();
-        let f = |x: &RecordBatch| x.column_by_name("feature").unwrap().as_list::<i32>().clone();
+        let back = VertexReader::open(vi, dir.path())
+            .unwrap()
+            .read_merged()
+            .unwrap();
+        let f = |x: &RecordBatch| {
+            x.column_by_name("feature")
+                .unwrap()
+                .as_list::<i32>()
+                .clone()
+        };
         for r in [0, 450, 902] {
             assert_eq!(
                 f(&b).value(r).as_primitive::<Float32Type>().values(),
@@ -437,7 +491,11 @@ mod value_types {
             (0..20_000).map(|i| format!("rust-analyzer cargo some-crate 1.2.3 module/item#{i}")),
         );
         let raw: usize = (0..s.len()).map(|i| s.value(i).len()).sum();
-        let schema = Arc::new(Schema::new(vec![Field::new("s", ArrowDataType::Utf8, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            ArrowDataType::Utf8,
+            false,
+        )]));
         let b = RecordBatch::try_new(schema, vec![Arc::new(s)]).unwrap();
         io::write_chunk(&path, std::slice::from_ref(&b), &FileType::Orc).unwrap();
         let size = std::fs::metadata(&path).unwrap().len() as usize;

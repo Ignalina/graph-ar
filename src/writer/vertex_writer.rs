@@ -23,8 +23,8 @@ use std::{
 use arrow_array::{
     ArrayRef, Int64Array, RecordBatch,
     builder::{
-        BooleanBuilder, Float32Builder, Float64Builder, Int32Builder, Int64Builder, ListBuilder,
-        StringBuilder,
+        BooleanBuilder, Date32Builder, Float32Builder, Float64Builder, Int32Builder, Int64Builder,
+        ListBuilder, StringBuilder, TimestampMillisecondBuilder,
     },
 };
 
@@ -56,10 +56,14 @@ pub enum PropertyValue {
     Float(f32),
     Double(f64),
     String(String),
-    /// A variable-length list of strings, written as an Arrow `List<Utf8>`
-    /// matching the schema declared by [`DataType::List`]. An empty `Vec`
-    /// yields an empty (non-null) list; a missing property yields a null list.
-    List(Vec<String>),
+    /// Days since the UNIX epoch, for a `date` property.
+    Date(i32),
+    /// Milliseconds since the UNIX epoch, for a `timestamp` property.
+    Timestamp(i64),
+    /// The items of a `list<T>` property. An empty `Vec` is an empty (non-null)
+    /// list, a missing property a null list, and an item of another type than
+    /// `T` a null item.
+    List(Vec<PropertyValue>),
 }
 
 impl Vertex {
@@ -243,98 +247,94 @@ pub fn build_record_batch_for_edges<T: HasProperties>(
 
 fn build_record_batch<T: HasProperties>(items: &[T], group: &PropertyGroup) -> Result<RecordBatch> {
     let schema = group.arrow_schema();
-    let rows = items.len();
-    let mut columns: Vec<ArrayRef> = Vec::with_capacity(group.properties.len());
-
-    for prop in &group.properties {
-        // Resolve the property key once per column; each row only does the
-        // name lookup, appending straight into the typed builder (no
-        // intermediate `Vec<Option<T>>`). A non-matching variant or a missing
-        // key both append a null, exactly as the old `Array::from` path did.
-        let name = prop.name.as_str();
-        let col: ArrayRef = match &prop.data_type {
-            DataType::Bool => {
-                let mut b = BooleanBuilder::with_capacity(rows);
-                for v in items {
-                    match v.get_property(name) {
-                        Some(PropertyValue::Bool(x)) => b.append_value(*x),
-                        _ => b.append_null(),
-                    }
-                }
-                Arc::new(b.finish())
-            }
-            DataType::Int32 => {
-                let mut b = Int32Builder::with_capacity(rows);
-                for v in items {
-                    match v.get_property(name) {
-                        Some(PropertyValue::Int32(x)) => b.append_value(*x),
-                        _ => b.append_null(),
-                    }
-                }
-                Arc::new(b.finish())
-            }
-            DataType::Int64 => {
-                let mut b = Int64Builder::with_capacity(rows);
-                for v in items {
-                    match v.get_property(name) {
-                        Some(PropertyValue::Int64(x)) => b.append_value(*x),
-                        _ => b.append_null(),
-                    }
-                }
-                Arc::new(b.finish())
-            }
-            DataType::Float => {
-                let mut b = Float32Builder::with_capacity(rows);
-                for v in items {
-                    match v.get_property(name) {
-                        Some(PropertyValue::Float(x)) => b.append_value(*x),
-                        _ => b.append_null(),
-                    }
-                }
-                Arc::new(b.finish())
-            }
-            DataType::Double => {
-                let mut b = Float64Builder::with_capacity(rows);
-                for v in items {
-                    match v.get_property(name) {
-                        Some(PropertyValue::Double(x)) => b.append_value(*x),
-                        _ => b.append_null(),
-                    }
-                }
-                Arc::new(b.finish())
-            }
-            DataType::String | DataType::Date | DataType::Timestamp | DataType::Time => {
-                let mut b = StringBuilder::with_capacity(rows, 0);
-                for v in items {
-                    match v.get_property(name) {
-                        Some(PropertyValue::String(s)) => b.append_value(s.as_str()),
-                        _ => b.append_null(),
-                    }
-                }
-                Arc::new(b.finish())
-            }
-            DataType::List => {
-                // `DataType::List` declares an Arrow `List<Utf8>` (item field),
-                // so build a real ListArray. Each `PropertyValue::List` becomes
-                // one (possibly empty) list slot; a missing key or a non-list
-                // variant becomes a null list, mirroring the scalar arms above.
-                let mut b = ListBuilder::new(StringBuilder::with_capacity(rows, 0));
-                for v in items {
-                    match v.get_property(name) {
-                        Some(PropertyValue::List(items)) => {
-                            for item in items {
-                                b.values().append_value(item.as_str());
-                            }
-                            b.append(true);
-                        }
-                        _ => b.append_null(),
-                    }
-                }
-                Arc::new(b.finish())
-            }
-        };
-        columns.push(col);
-    }
-
+    let columns = group
+        .properties
+        .iter()
+        .map(|prop| build_column(items, &prop.name, &prop.data_type))
+        .collect::<Result<Vec<ArrayRef>>>()?;
     Ok(RecordBatch::try_new(schema, columns)?)
+}
+
+/// One column from the rows. The property key is resolved once per column;
+/// each row only does the name lookup and appends straight into the typed
+/// builder. A value of another type or a missing key appends a null.
+fn build_column<T: HasProperties>(items: &[T], name: &str, ty: &DataType) -> Result<ArrayRef> {
+    let rows = items.len();
+    macro_rules! scalar {
+        ($builder:expr, $variant:ident, $value:expr) => {{
+            let mut b = $builder;
+            for v in items {
+                match v.get_property(name) {
+                    Some(PropertyValue::$variant(x)) => b.append_value($value(x)),
+                    _ => b.append_null(),
+                }
+            }
+            Arc::new(b.finish()) as ArrayRef
+        }};
+    }
+    macro_rules! list {
+        ($builder:expr, $variant:ident, $value:expr) => {{
+            let mut b = ListBuilder::new($builder);
+            for v in items {
+                match v.get_property(name) {
+                    Some(PropertyValue::List(list)) => {
+                        for item in list {
+                            match item {
+                                PropertyValue::$variant(x) => b.values().append_value($value(x)),
+                                _ => b.values().append_null(),
+                            }
+                        }
+                        b.append(true);
+                    }
+                    _ => b.append_null(),
+                }
+            }
+            Arc::new(b.finish()) as ArrayRef
+        }};
+    }
+    let copy_bool = |x: &bool| *x;
+    let copy_i32 = |x: &i32| *x;
+    let copy_i64 = |x: &i64| *x;
+    let copy_f32 = |x: &f32| *x;
+    let copy_f64 = |x: &f64| *x;
+    fn text(x: &String) -> &str {
+        x
+    }
+    Ok(match ty {
+        DataType::Bool => scalar!(BooleanBuilder::with_capacity(rows), Bool, copy_bool),
+        DataType::Int32 => scalar!(Int32Builder::with_capacity(rows), Int32, copy_i32),
+        DataType::Int64 => scalar!(Int64Builder::with_capacity(rows), Int64, copy_i64),
+        DataType::Float => scalar!(Float32Builder::with_capacity(rows), Float, copy_f32),
+        DataType::Double => scalar!(Float64Builder::with_capacity(rows), Double, copy_f64),
+        DataType::String => scalar!(StringBuilder::with_capacity(rows, 0), String, text),
+        DataType::Date => scalar!(Date32Builder::with_capacity(rows), Date, copy_i32),
+        DataType::Timestamp => {
+            scalar!(
+                TimestampMillisecondBuilder::with_capacity(rows),
+                Timestamp,
+                copy_i64
+            )
+        }
+        DataType::Time => {
+            return Err(GraphArError::Other(format!(
+                "property `{name}`: the row builders do not take `time` values"
+            )));
+        }
+        DataType::List(item) => match item.as_ref() {
+            DataType::Bool => list!(BooleanBuilder::new(), Bool, copy_bool),
+            DataType::Int32 => list!(Int32Builder::new(), Int32, copy_i32),
+            DataType::Int64 => list!(Int64Builder::new(), Int64, copy_i64),
+            DataType::Float => list!(Float32Builder::new(), Float, copy_f32),
+            DataType::Double => list!(Float64Builder::new(), Double, copy_f64),
+            DataType::String => list!(StringBuilder::new(), String, text),
+            DataType::Date => list!(Date32Builder::new(), Date, copy_i32),
+            DataType::Timestamp => list!(TimestampMillisecondBuilder::new(), Timestamp, copy_i64),
+            other => {
+                return Err(GraphArError::Other(format!(
+                    "property `{name}`: the row builders do not take list<{}> values",
+                    other.name()
+                )));
+            }
+        },
+    })
 }

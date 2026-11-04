@@ -252,11 +252,7 @@ pub fn write_chunk_bytes(batches: &[RecordBatch], file_type: &FileType) -> Resul
         }
         #[cfg(feature = "orc")]
         FileType::Orc => {
-            let mut writer = orc_rust::ArrowWriterBuilder::new(&mut out, schema).try_build()?;
-            for batch in batches {
-                writer.write(batch)?;
-            }
-            writer.close()?;
+            crate::io::orc::write_to(&mut out, batches)?;
         }
         #[cfg(not(feature = "orc"))]
         FileType::Orc => {
