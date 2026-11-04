@@ -315,16 +315,27 @@ static void read_csr(const std::string& dir) {
       UNWRAP(graphar::AdjListArrowChunkReader::Make(g.ei, t, g.prefix));
   for (int64_t p = 0; p < parts; p++) {
     const int64_t base = offsets.back();
-    CHECK_OK(off_reader->seek(p * vchunk));
-    auto off = std::static_pointer_cast<arrow::Int64Array>(
-        UNWRAP(off_reader->GetChunk()));
     // Vertices in this chunk; the C++ table writer pads the last chunk's
-    // offsets to chunk_size + 1 rows.
+    // offsets to chunk_size + 1 rows. GetChunk() returns only the first Arrow
+    // chunk of the offset column (chunk_reader.cc: `->column(0)->chunk(0)`),
+    // which for large vertex chunks is a prefix, so seek forward until the
+    // offsets of all len vertices are in; the closing offset of the chunk is
+    // its edge count (seek cannot address row len, it belongs to the next
+    // chunk's id range).
     const int64_t len = std::min(vchunk, n - p * vchunk);
-    for (int64_t i = 1; i <= len && i < off->length(); i++)
-      offsets.push_back(base + off->Value(i));
     const int64_t edges_in_part =
         UNWRAP(graphar::util::GetEdgeNum(g.prefix, g.ei, t, p));
+    int64_t have = 0;  // offset rows of this chunk taken (row 0 is the leading 0)
+    while (have < len) {
+      CHECK_OK(off_reader->seek(p * vchunk + have));
+      auto off = std::static_pointer_cast<arrow::Int64Array>(
+          UNWRAP(off_reader->GetChunk()));
+      if (off->length() == 0) break;
+      for (int64_t i = 0; i < off->length() && have < len; i++, have++) {
+        if (have > 0) offsets.push_back(base + off->Value(i));
+      }
+    }
+    offsets.push_back(base + edges_in_part);
     if (edges_in_part == 0) continue;
     CHECK_OK(adj_reader->seek_chunk_index(p, 0));
     int64_t got = 0;
