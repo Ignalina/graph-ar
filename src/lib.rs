@@ -23,6 +23,7 @@
 //! [`storage::ChunkStore`] on any `object_store` backend. The on-disk layout
 //! is the one the GraphAr C++, Java and Spark libraries use.
 
+mod format_tests;
 mod spec_tests;
 mod tests;
 mod type_tests;

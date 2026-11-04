@@ -71,7 +71,6 @@ async fn round_trip_all_formats(store: &ChunkStore) {
         FileType::Json,
         #[cfg(feature = "orc")]
         FileType::Orc,
-        FileType::ArrowIpc,
     ] {
         let rel = format!("vertex/person/id/chunk0.{}", ft.extension());
         store

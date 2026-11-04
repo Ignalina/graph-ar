@@ -211,11 +211,6 @@ mod format_matrix_tests {
     }
 
     #[test]
-    fn round_trip_arrow_ipc() {
-        round_trip(FileType::ArrowIpc);
-    }
-
-    #[test]
     fn empty_write_is_noop() {
         let dir = tempdir().unwrap();
         for ft in [
@@ -224,7 +219,6 @@ mod format_matrix_tests {
             FileType::Json,
             #[cfg(feature = "orc")]
             FileType::Orc,
-            FileType::ArrowIpc,
         ] {
             let path = dir.path().join(format!("empty.{}", ft.extension()));
             io::write_chunk(&path, &[], &ft).unwrap();
@@ -271,7 +265,6 @@ mod storage_tests {
             FileType::Json,
             #[cfg(feature = "orc")]
             FileType::Orc,
-            FileType::ArrowIpc,
         ] {
             let rel = format!("vertex/person/id/chunk0.{}", ft.extension());
             store
@@ -1173,7 +1166,6 @@ mod empty_slice_contract_tests {
         FileType::Json,
         #[cfg(feature = "orc")]
         FileType::Orc,
-        FileType::ArrowIpc,
     ];
 
     /// Documented contract: encoding an *empty slice* of batches (`&[]`) writes

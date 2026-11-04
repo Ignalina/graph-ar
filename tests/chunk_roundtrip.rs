@@ -46,7 +46,6 @@ fn chunk_roundtrip_all_filetypes_preserve_rows_and_columns() {
 
     for ft in [
         FileType::Parquet,
-        FileType::ArrowIpc,
         FileType::Csv,
         FileType::Json,
         #[cfg(feature = "orc")]
