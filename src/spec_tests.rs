@@ -471,6 +471,30 @@ version: gar/v1
         check_ldbc_sample("csv");
     }
 
+    #[test]
+    fn upstream_csv_properties_keep_declared_types() {
+        // CSV carries no types; a string property that looks like a
+        // timestamp must come back as the declared `string`.
+        let Some(root) = testdata() else {
+            return;
+        };
+        let base = root.join("ldbc_sample/csv");
+        let ei = EdgeInfo::load(base.join("person_knows_person.edge.yml")).unwrap();
+        let t = AdjListType::OrderedBySource;
+        let er = EdgeReader::open(ei.clone(), &base, &t).unwrap();
+        let group = ei.property_groups[0].clone();
+        let batches = er.read_property_group(&t, &group, 0).unwrap();
+        let field = batches[0].schema().field_with_name("creationDate").unwrap().clone();
+        assert_eq!(field.data_type(), &ArrowDataType::Utf8);
+
+        let vi = VertexInfo::load(base.join("person.vertex.yml")).unwrap();
+        let merged = VertexReader::open(vi, &base).unwrap().read_merged().unwrap();
+        assert_eq!(
+            merged.schema().field_with_name("id").unwrap().data_type(),
+            &ArrowDataType::Int64
+        );
+    }
+
     #[cfg(feature = "orc")]
     #[test]
     fn upstream_ldbc_sample_orc() {
