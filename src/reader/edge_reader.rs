@@ -18,6 +18,7 @@
 use std::path::{Path, PathBuf};
 
 use arrow_array::{Int64Array, RecordBatch};
+use arrow_schema::DataType;
 
 use crate::{
     error::{GraphArError, Result},
@@ -231,8 +232,8 @@ impl EdgeReader {
                 let mut counts = vec![0i64; len];
                 let mut pairs: Vec<(usize, i64)> = Vec::new();
                 for b in &batches {
-                    let k = i64_col(b, key_col)?.values();
-                    let o = i64_col(b, other_col)?.values();
+                    let (k, o) = (i64_col(b, key_col)?, i64_col(b, other_col)?);
+                    let (k, o) = (k.values(), o.values());
                     for (&k, &o) in k.iter().zip(o) {
                         let slot = (k as u64).wrapping_sub(v_start) as usize;
                         if slot >= len {
@@ -282,8 +283,26 @@ impl EdgeReader {
     }
 }
 
-fn i64_col<'a>(b: &'a RecordBatch, name: &str) -> Result<&'a Int64Array> {
-    b.column_by_name(name)
-        .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
-        .ok_or_else(|| GraphArError::Other(format!("chunk has no int64 column `{name}`")))
+/// An int64 view of an index or offset column; int32 and unsigned columns
+/// (written by some producers, e.g. Spark for offsets) are widened.
+fn i64_col(b: &RecordBatch, name: &str) -> Result<Int64Array> {
+    let col = b
+        .column_by_name(name)
+        .ok_or_else(|| GraphArError::Other(format!("chunk has no column `{name}`")))?;
+    if let Some(a) = col.as_any().downcast_ref::<Int64Array>() {
+        return Ok(a.clone());
+    }
+    match col.data_type() {
+        DataType::Int32
+        | DataType::UInt32
+        | DataType::Int16
+        | DataType::UInt16
+        | DataType::UInt64 => {
+            let cast = arrow::compute::cast(col, &DataType::Int64)?;
+            Ok(cast.as_any().downcast_ref::<Int64Array>().unwrap().clone())
+        }
+        other => Err(GraphArError::Other(format!(
+            "column `{name}` is {other}, not an integer index column"
+        ))),
+    }
 }

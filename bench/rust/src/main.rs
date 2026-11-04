@@ -27,6 +27,7 @@
 //! graphar-bench read-prop  <graph-dir> <property>
 //! graphar-bench read-csr   <graph-dir>
 //! graphar-bench scan       <graph-dir>
+//! graphar-bench conform    <testing-dir>
 //! ```
 //!
 //! An input dir holds `vertices.parquet`, `edges.parquet` (with
@@ -71,6 +72,7 @@ fn main() -> R<()> {
         "read-prop" => read_prop(Path::new(a(1)), a(2)),
         "read-csr" => read_csr(Path::new(a(1))),
         "scan" => scan(Path::new(a(1))),
+        "conform" => conform(Path::new(a(1))),
         other => Err(format!("unknown command `{other}`").into()),
     }
 }
@@ -653,4 +655,72 @@ fn scan(dir: &Path) -> R<()> {
         json!({ "vertex_rows": vrows, "edges": erows, "cells": cells, "sum": sum }),
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------- conformance
+
+/// Load and read every `*.graph.yml` under `root` (the upstream `testing`
+/// data): every vertex type merged, every adjacency list as CSR, every edge
+/// property group. One JSON line per graph.
+fn conform(root: &Path) -> R<()> {
+    let mut ymls = Vec::new();
+    collect(root, &mut ymls);
+    ymls.sort();
+    for yml in ymls {
+        let base = yml.parent().unwrap();
+        let rel = yml.strip_prefix(root).unwrap_or(&yml).display().to_string();
+        let gi = match GraphInfo::load(&yml) {
+            Ok(g) => g,
+            Err(e) => {
+                println!("{}", json!({ "graph": rel, "load": e.to_string() }));
+                continue;
+            }
+        };
+        let mut parts = Vec::new();
+        for v in &gi.vertices {
+            let r = (|| -> R<String> {
+                let vi = VertexInfo::load(base.join(v))?;
+                let b = VertexReader::open(vi, base)?.read_merged()?;
+                Ok(format!("{} rows x {} cols", b.num_rows(), b.num_columns()))
+            })();
+            parts.push(json!({ "vertex": v, "result": r.unwrap_or_else(|e| format!("ERROR {e}")) }));
+        }
+        for e in &gi.edges {
+            match EdgeInfo::load(base.join(e)) {
+                Err(err) => parts.push(json!({ "edge": e, "result": format!("ERROR {err}") })),
+                Ok(ei) => {
+                    for a in &ei.adj_lists {
+                        let r = (|| -> R<String> {
+                            let t = a.adj_list_type()?;
+                            let er = EdgeReader::open(ei.clone(), base, &t)?;
+                            let (off, idx) = er.read_csr(&t)?;
+                            let mut prop_rows = 0usize;
+                            for vc in 0..er_vertex_chunks(&er, &t) {
+                                for g in &ei.property_groups {
+                                    prop_rows += er.read_property_group(&t, g, vc)?.iter().map(|b| b.num_rows()).sum::<usize>();
+                                }
+                            }
+                            Ok(format!("{} n={} m={} prop_rows={}", t.dir_name(), off.len() - 1, idx.len(), prop_rows))
+                        })();
+                        parts.push(json!({ "edge": e, "result": r.unwrap_or_else(|e| format!("ERROR {e}")) }));
+                    }
+                }
+            }
+        }
+        println!("{}", json!({ "graph": rel, "parts": parts }));
+    }
+    Ok(())
+}
+
+fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                collect(&p, out);
+            } else if p.to_string_lossy().ends_with(".graph.yml") {
+                out.push(p);
+            }
+        }
+    }
 }
