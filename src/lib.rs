@@ -1,3 +1,4 @@
+mod spec_tests;
 mod tests;
 
 pub mod error;

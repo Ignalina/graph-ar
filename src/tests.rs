@@ -94,7 +94,7 @@ mod metadata_tests {
         let path = vi.chunk_path(group, 0);
         assert_eq!(
             path.to_str().unwrap(),
-            "vertex/person/firstName_lastName/chunk0.parquet"
+            "vertex/person/firstName_lastName/chunk0"
         );
     }
 
@@ -106,7 +106,7 @@ mod metadata_tests {
             .unwrap();
         assert_eq!(
             path.to_str().unwrap(),
-            "edge/person_knows_person/ordered_by_source/adj_list/part2/chunk3.parquet"
+            "edge/person_knows_person/ordered_by_source/adj_list/part2/chunk3"
         );
     }
 
@@ -118,7 +118,7 @@ mod metadata_tests {
             .unwrap();
         assert_eq!(
             path.to_str().unwrap(),
-            "edge/person_knows_person/ordered_by_source/offset/chunk0.parquet"
+            "edge/person_knows_person/ordered_by_source/offset/chunk0"
         );
     }
 
@@ -129,7 +129,7 @@ mod metadata_tests {
         let path = ei.property_chunk_path(&AdjListType::OrderedBySource, group, 1, 0);
         assert_eq!(
             path.to_str().unwrap(),
-            "edge/person_knows_person/ordered_by_source/creationDate/part1/chunk0.parquet"
+            "edge/person_knows_person/ordered_by_source/creationDate/part1/chunk0"
         );
     }
 }
@@ -559,14 +559,15 @@ mod io_tests {
         let reader = VertexReader::new(vi, dir.path(), 25);
         let merged = reader.read_merged().unwrap();
         assert_eq!(merged.num_rows(), 25);
-        assert_eq!(merged.num_columns(), 3);
+        // Every group chunk carries `_graphArVertexIndex`; the merge keeps one.
+        assert_eq!(merged.num_columns(), 4);
         let names: Vec<_> = merged
             .schema()
             .fields()
             .iter()
             .map(|f| f.name().clone())
             .collect();
-        assert_eq!(names, vec!["id", "name", "age"]);
+        assert_eq!(names, vec!["_graphArVertexIndex", "id", "name", "age"]);
     }
 }
 
@@ -797,12 +798,12 @@ mod validate_tests {
         let expect = |rel: &str| {
             assert!(base.join(rel).exists(), "expected spec path missing: {rel}");
         };
-        expect("vertex/person/id/chunk0.parquet");
-        expect("vertex/person/id/chunk2.parquet"); // 3rd chunk
-        expect("vertex/person/firstName_lastName/chunk0.parquet");
-        expect("edge/person_knows_person/ordered_by_source/adj_list/part0/chunk0.parquet");
-        expect("edge/person_knows_person/ordered_by_source/offset/chunk0.parquet");
-        expect("edge/person_knows_person/ordered_by_source/creationDate/part0/chunk0.parquet");
+        expect("vertex/person/id/chunk0");
+        expect("vertex/person/id/chunk2"); // 3rd chunk
+        expect("vertex/person/firstName_lastName/chunk0");
+        expect("edge/person_knows_person/ordered_by_source/adj_list/part0/chunk0");
+        expect("edge/person_knows_person/ordered_by_source/offset/chunk0");
+        expect("edge/person_knows_person/ordered_by_source/creationDate/part0/chunk0");
 
         // --- validator passes (no errors) ---
         let issues = validate_graph_dir(base.join("social.graph.yml"));
