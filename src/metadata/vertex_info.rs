@@ -103,7 +103,7 @@ impl VertexInfo {
     }
 
     pub fn save(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
-        let content = serde_yaml::to_string(self)?;
+        let content = super::yaml::to_string(self)?;
         std::fs::write(path, content)?;
         Ok(())
     }

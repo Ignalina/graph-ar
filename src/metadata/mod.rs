@@ -19,6 +19,7 @@ pub mod edge_info;
 pub mod graph_info;
 pub mod property;
 pub mod vertex_info;
+pub(crate) mod yaml;
 
 pub use edge_info::{AdjListInfo, EdgeInfo};
 pub use graph_info::GraphInfo;
