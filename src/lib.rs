@@ -19,7 +19,7 @@
 //!
 //! Info files are modelled in [`metadata`]; chunks are read and written as
 //! Arrow `RecordBatch`es by [`reader`] and [`writer`], in Parquet, CSV, ORC
-//! (feature `orc`), JSON or Arrow IPC, on local disk or through
+//! (feature `orc`) or JSON, on local disk or through
 //! [`storage::ChunkStore`] on any `object_store` backend. The on-disk layout
 //! is the one the GraphAr C++, Java and Spark libraries use.
 
@@ -29,6 +29,7 @@ mod tests;
 mod type_tests;
 
 pub mod error;
+pub mod format;
 pub mod general_params;
 pub mod io;
 pub mod merge;
@@ -40,6 +41,7 @@ pub mod validate;
 pub mod writer;
 
 pub use error::{GraphArError, Result};
+pub use format::{PayloadFormat, format_for, register_format};
 pub use general_params::{DST_INDEX_COL, OFFSET_COL, SRC_INDEX_COL, VERTEX_INDEX_COL};
 pub use merge::merge_property_groups;
 pub use metadata::{AdjListInfo, EdgeInfo, GraphInfo, Property, PropertyGroup, VertexInfo};

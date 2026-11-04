@@ -10,6 +10,7 @@ described by YAML info files. This crate reads and writes those chunks as Arrow
 |---|---|
 | `metadata` | `GraphInfo`, `VertexInfo`, `EdgeInfo`, `PropertyGroup`, `Property`, `AdjListInfo`; serde models of the info files and the path rules of the layout |
 | `general_params` | the reserved names: `_graphArVertexIndex`, `_graphArSrcIndex`, `_graphArDstIndex`, `_graphArOffset`, `vertex_count`, `edge_count<N>` |
+| `format` | `PayloadFormat`: the trait a chunk format implements, the spec's four formats, `format_for`, `register_format` |
 | `io` | `read_chunk` / `write_chunk` per `FileType`, `resolve_chunk`, `read_count` / `write_count` |
 | `writer` | `VerticesBuilder`, `EdgesBuilder` (row builders) and `write_vertex_table`, `write_edge_table` (Arrow tables) |
 | `reader` | `VertexReader`, `EdgeReader` |
@@ -28,6 +29,26 @@ described by YAML info files. This crate reads and writes those chunks as Arrow
 | Ordered adjacency lists are sorted by the aligned endpoint, then the other endpoint; offsets are per vertex chunk, `chunk_vertices + 1` entries, relative to the partition | `writer::write_edge_table` |
 | Partitions may be sparse (a vertex chunk with no edges has no `part<N>` directory); numbering inside a partition is gapless | `validate` |
 | Storage is `object_store`-generic: one API for local, S3, GCS and Azure | `storage::ChunkStore` |
+
+## Chunk formats
+
+`PayloadFormat` turns Arrow batches into a chunk and back: `name` (the
+`file_type` value), `extension`, `read_bytes` and `write_bytes`, with
+`read_chunk` and `write_chunk` for files defaulting to those two. The spec's
+formats are built in. Any other `file_type` value parses as
+`FileType::Extension(name)` and resolves through a format registered with
+`register_format`; a crate outside this one provides it, and an unregistered
+name is an error on read and in `validate`.
+
+```
+file_type: <name> ──▶ FileType ──▶ format_for ──▶ built-in, or the registry
+                                                     │ Arc<dyn PayloadFormat>
+                         every reader and writer ◀───┘ one lookup per chunk
+```
+
+A chunk costs one lookup, O(1), plus one virtual call, against decoding the
+whole chunk, so the trait adds nothing measurable to a read. Row-window reads
+stay Parquet-only pushdown; other formats read the chunk and slice it.
 
 ## Write path
 
@@ -69,4 +90,3 @@ structure such as a GraphBLAS matrix.
 | Edge `vertex_count` of the non-aligned side | read only when an adjacency list aligned by that side exists |
 | `time` values in the row builders | `time` is not a GraphAr C++ type; the row builders return an error |
 | ORC strings | orc-rust 0.9 writes them directly, without dictionary encoding; chunks are ZSTD-compressed |
-| Arrow IPC chunk format | supported here, not part of the upstream `FileType` set |

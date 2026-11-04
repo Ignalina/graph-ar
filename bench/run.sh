@@ -20,14 +20,14 @@
 #   run.sh <work-dir> <label>
 # <work-dir> holds data/<dataset>-input, data/<dataset>-info-<format> and bin/
 # (graphar-bench, gar_bench_cpp, optional graphar-rs-bench). RUNS (default 5),
-# DATASETS (default "ldbc mimir") and FORMATS (default "parquet csv orc arrow")
+# DATASETS (default "ldbc mimir") and FORMATS (default "parquet csv orc")
 # narrow it down.
 set -euo pipefail
 W=${1:?work dir}
 LABEL=${2:?label}
 RUNS=${RUNS:-5}
 DATASETS=${DATASETS:-ldbc mimir}
-FORMATS=${FORMATS:-parquet csv orc arrow}
+FORMATS=${FORMATS:-parquet csv orc}
 OUT=${OUT:-$W/raw/$LABEL.jsonl}
 NATIVE=$W/bin/graphar-bench
 CPP=$W/bin/gar_bench_cpp
@@ -62,7 +62,7 @@ for ds in $DATASETS; do
   for fmt in $FORMATS; do
     info=$W/data/$ds-info-$fmt
     input=$W/data/$ds-input
-    impls="native cpp"; [ "$fmt" = arrow ] && impls=native
+    impls="native cpp"
     for impl in $impls; do
       bin=$NATIVE; [ "$impl" = cpp ] && bin=$CPP
       for api in table builder; do
@@ -85,7 +85,7 @@ for ds in $DATASETS; do
         echo "{\"label\":\"$LABEL\",\"dataset\":\"$ds\",\"format\":\"$fmt\",\"graph\":\"$impl-table\",\"run\":0,\"error\":\"reference write failed, try $try\",\"cmd\":\"$bin write table\"}" >> "$OUT"
       done
     done
-    if [ -x "$GRS" ] && [ "$fmt" != arrow ]; then
+    if [ -x "$GRS" ]; then
       for r in $(seq 1 "$RUNS"); do
         g=$W/out/$ds-$fmt-graphar-rs-builder
         clean "$g"

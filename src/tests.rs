@@ -1182,7 +1182,7 @@ mod empty_slice_contract_tests {
     }
 
     /// Contrast: passing a real (even zero-row) batch is *not* the same as `&[]`.
-    /// The schema-bearing/columnar formats (Parquet, Orc, Arrow IPC) and CSV (a
+    /// The schema-bearing/columnar formats (Parquet, Orc) and CSV (a
     /// header row) emit bytes; line-delimited JSON emits nothing for zero rows.
     /// Documenting this as data pins the per-format contract.
     #[test]
@@ -1201,7 +1201,7 @@ mod empty_slice_contract_tests {
             match ft {
                 // Line-delimited JSON writes one line per row, so zero rows → no bytes.
                 FileType::Json => assert!(bytes.is_empty(), "Json zero-row should be empty"),
-                // CSV writes a header; Parquet/Orc/IPC write schema/footer metadata.
+                // CSV writes a header; Parquet/Orc write schema/footer metadata.
                 _ => assert!(
                     !bytes.is_empty(),
                     "{ft:?}: a zero-row batch still encodes a schema/header (nonempty={nonempty})"

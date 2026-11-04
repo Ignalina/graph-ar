@@ -455,7 +455,6 @@ fn file_type(fmt: &str) -> R<FileType> {
         "csv" => FileType::Csv,
         "orc" => FileType::Orc,
         "json" => FileType::Json,
-        "arrow" => FileType::ArrowIpc,
         _ => return Err(format!("format {fmt}").into()),
     })
 }

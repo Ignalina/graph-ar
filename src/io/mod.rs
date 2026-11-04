@@ -16,7 +16,6 @@
 // under the License.
 
 pub mod csv;
-pub mod ipc;
 pub mod json;
 #[cfg(feature = "orc")]
 pub mod orc;
@@ -29,44 +28,36 @@ use std::{
     sync::Arc,
 };
 
-use crate::{error::Result, types::FileType};
+use crate::{error::Result, format::format_for, types::FileType};
 
 pub fn read_chunk(path: impl AsRef<Path>, file_type: &FileType) -> Result<Vec<RecordBatch>> {
-    match file_type {
-        FileType::Parquet => parquet::read(path),
-        FileType::Csv => csv::read(path),
-        FileType::Json => json::read(path),
-        #[cfg(feature = "orc")]
-        FileType::Orc => orc::read(path),
-        #[cfg(not(feature = "orc"))]
-        FileType::Orc => Err(crate::error::GraphArError::from(std::io::Error::other(
-            "graphar was built without the `orc` feature — ORC is not compiled in. \
-             Rebuild with `--features orc`.",
-        ))),
-        FileType::ArrowIpc => ipc::read(path),
-    }
+    format_for(file_type)?.read_chunk(path.as_ref(), None)
 }
 
-/// Read a chunk, giving the text formats (CSV, JSON) the column types of
-/// `declared` (a property group's schema). Self-describing formats ignore it.
+/// Read a chunk, giving a format without its own types (CSV, JSON) the column
+/// types of `declared`, a property group's schema.
 pub fn read_chunk_typed(
     path: impl AsRef<Path>,
     file_type: &FileType,
     declared: &Schema,
 ) -> Result<Vec<RecordBatch>> {
-    match file_type {
-        FileType::Csv => csv::read_typed(path, Some(declared)),
-        FileType::Json => json::read_typed(path, Some(declared)),
-        // ORC timestamps come back as nanoseconds.
-        FileType::Orc => read_chunk(path, file_type)?
-            .iter()
-            .map(|b| cast_to_declared(b, declared))
-            .collect(),
-        _ => read_chunk(path, file_type),
+    format_for(file_type)?.read_chunk(path.as_ref(), Some(declared))
+}
+
+/// `batches` with the columns named in `declared` cast to the declared types.
+#[cfg_attr(not(feature = "orc"), allow(dead_code))]
+pub(crate) fn cast_all(
+    batches: Vec<RecordBatch>,
+    declared: Option<&Schema>,
+) -> Result<Vec<RecordBatch>> {
+    match declared {
+        Some(d) => batches.iter().map(|b| cast_to_declared(b, d)).collect(),
+        None => Ok(batches),
     }
 }
 
 /// `batch` with every column named in `declared` cast to the declared type.
+#[cfg_attr(not(feature = "orc"), allow(dead_code))]
 fn cast_to_declared(batch: &RecordBatch, declared: &Schema) -> Result<RecordBatch> {
     let schema = batch.schema();
     let mut fields = Vec::with_capacity(schema.fields().len());
@@ -179,19 +170,7 @@ pub fn write_chunk(
     if let Some(parent) = path.as_ref().parent() {
         std::fs::create_dir_all(parent)?;
     }
-    match file_type {
-        FileType::Parquet => parquet::write(path, batches),
-        FileType::Csv => csv::write(path, batches),
-        FileType::Json => json::write(path, batches),
-        #[cfg(feature = "orc")]
-        FileType::Orc => orc::write(path, batches),
-        #[cfg(not(feature = "orc"))]
-        FileType::Orc => Err(crate::error::GraphArError::from(std::io::Error::other(
-            "graphar was built without the `orc` feature — ORC is not compiled in. \
-             Rebuild with `--features orc`.",
-        ))),
-        FileType::ArrowIpc => ipc::write(path, batches),
-    }
+    format_for(file_type)?.write_chunk(path.as_ref(), batches)
 }
 
 /// Find a chunk file on disk. The `gar/v1` layout names chunks `chunk<N>`
@@ -204,7 +183,7 @@ pub fn resolve_chunk(path: impl AsRef<Path>, file_type: &FileType) -> Option<Pat
     }
     let mut legacy = path.as_os_str().to_owned();
     legacy.push(".");
-    legacy.push(file_type.extension());
+    legacy.push(file_type.extension().as_str());
     let legacy = PathBuf::from(legacy);
     legacy.is_file().then_some(legacy)
 }

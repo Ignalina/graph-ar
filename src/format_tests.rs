@@ -64,7 +64,11 @@ mod payload_format {
     }
 
     fn table(n: i64) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Int64, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            ArrowDataType::Int64,
+            false,
+        )]));
         RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from_iter_values(0..n))]).unwrap()
     }
 
@@ -127,7 +131,10 @@ mod payload_format {
         .unwrap();
         let t = AdjListType::OrderedBySource;
         write_edge_table(&ei, base, &t, &edges, 10).unwrap();
-        let (offsets, indices) = EdgeReader::open(ei, base, &t).unwrap().read_csr(&t).unwrap();
+        let (offsets, indices) = EdgeReader::open(ei, base, &t)
+            .unwrap()
+            .read_csr(&t)
+            .unwrap();
         assert_eq!(offsets.len(), 11);
         assert_eq!(indices, vec![1, 2, 0]);
     }
@@ -140,7 +147,10 @@ mod payload_format {
         vertex_info(ft.clone()).save(&p).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("file_type: marked\n"), "{text}");
-        assert_eq!(VertexInfo::load(&p).unwrap().property_groups[0].file_type, ft);
+        assert_eq!(
+            VertexInfo::load(&p).unwrap().property_groups[0].file_type,
+            ft
+        );
     }
 
     #[tokio::test]
@@ -148,7 +158,10 @@ mod payload_format {
         let ft = marked();
         let dir = tempdir().unwrap();
         let store = ChunkStore::local(dir.path()).unwrap();
-        store.write_chunk("c/chunk0", &[table(3)], &ft).await.unwrap();
+        store
+            .write_chunk("c/chunk0", &[table(3)], &ft)
+            .await
+            .unwrap();
         let back = store.read_chunk("c/chunk0", &ft).await.unwrap();
         assert_eq!(back[0].num_rows(), 3);
     }
@@ -156,7 +169,9 @@ mod payload_format {
     #[test]
     fn an_unregistered_format_is_a_clear_error() {
         let ft: FileType = serde_yaml::from_str("nobody_registered_this").unwrap();
-        let err = io::read_chunk(Path::new("/nonexistent"), &ft).unwrap_err().to_string();
+        let err = io::read_chunk(Path::new("/nonexistent"), &ft)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("nobody_registered_this"), "{err}");
         assert!(err.contains("not registered"), "{err}");
         assert!(format_for(&ft).is_err());
@@ -197,6 +212,9 @@ mod payload_format {
         let dir = tempdir().unwrap();
         let path = dir.path().join("chunk0");
         io::write_chunk(&path, &[table(2)], &FileType::Parquet).unwrap();
-        assert_eq!(io::read_chunk(&path, &FileType::Parquet).unwrap()[0].num_rows(), 2);
+        assert_eq!(
+            io::read_chunk(&path, &FileType::Parquet).unwrap()[0].num_rows(),
+            2
+        );
     }
 }

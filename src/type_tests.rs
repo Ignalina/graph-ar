@@ -249,8 +249,8 @@ mod value_types {
     }
 
     #[test]
-    fn row_builder_round_trips_every_type_in_parquet_json_and_ipc() {
-        for ft in [FileType::Parquet, FileType::Json, FileType::ArrowIpc] {
+    fn row_builder_round_trips_every_type_in_parquet_and_json() {
+        for ft in [FileType::Parquet, FileType::Json] {
             let dir = tempdir().unwrap();
             let vi = vertex_info(ft.clone(), true);
             dump(&vi, dir.path(), 10, true);

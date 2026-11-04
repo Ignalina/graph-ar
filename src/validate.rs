@@ -298,6 +298,7 @@ pub fn validate_edge_info(
 
     let edge_dir = base.join(&ei.prefix);
     for adj in &ei.adj_lists {
+        issues.extend(check_format(&adj.file_type, &triple));
         let adj_type = match adj.adj_list_type() {
             Ok(t) => t,
             Err(e) => {
@@ -357,12 +358,20 @@ pub fn validate_edge_info(
 }
 
 /// Shared property-group sanity checks (schema-level, no IO).
+/// A `file_type` must be a spec format or a registered one.
+fn check_format(file_type: &FileType, owner: &str) -> Option<ValidationIssue> {
+    crate::format::format_for(file_type)
+        .err()
+        .map(|e| ValidationIssue::error(format!("`{owner}`: {e}")))
+}
+
 fn check_property_groups(groups: &[PropertyGroup], owner: &str) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     let mut primaries = 0usize;
     let mut seen_names = std::collections::HashSet::new();
 
     for group in groups {
+        issues.extend(check_format(&group.file_type, owner));
         if group.properties.is_empty() {
             issues.push(ValidationIssue::error(format!(
                 "`{owner}` has a property group with no properties"

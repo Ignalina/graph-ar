@@ -33,7 +33,7 @@
 //! # }
 //! ```
 
-use std::{io::Cursor, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
@@ -42,11 +42,11 @@ use object_store::{
     aws::AmazonS3Builder, azure::MicrosoftAzureBuilder, gcp::GoogleCloudStorageBuilder,
     http::HttpBuilder, path::Path as StorePath,
 };
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use url::Url;
 
 use crate::{
     error::{GraphArError, Result},
+    format::format_for,
     types::FileType,
 };
 
@@ -181,41 +181,7 @@ impl MultipartOptions {
 
 /// Decode a chunk held in memory.
 pub fn read_chunk_bytes(bytes: Bytes, file_type: &FileType) -> Result<Vec<RecordBatch>> {
-    match file_type {
-        FileType::Parquet => {
-            let reader = ParquetRecordBatchReaderBuilder::try_new(bytes)?.build()?;
-            reader.map(|b| Ok(b?)).collect()
-        }
-        FileType::Csv => {
-            let format = arrow_csv::reader::Format::default().with_header(true);
-            let (schema, _) = format.infer_schema(Cursor::new(&bytes), Some(100))?;
-            let reader = arrow_csv::ReaderBuilder::new(Arc::new(schema))
-                .with_header(true)
-                .build(Cursor::new(&bytes))?;
-            reader.map(|b| Ok(b?)).collect()
-        }
-        FileType::Json => {
-            let mut cursor = Cursor::new(&bytes);
-            let (schema, _) = arrow::json::reader::infer_json_schema(&mut cursor, None)?;
-            cursor.set_position(0);
-            let reader = arrow::json::ReaderBuilder::new(Arc::new(schema)).build(cursor)?;
-            reader.map(|b| Ok(b?)).collect()
-        }
-        #[cfg(feature = "orc")]
-        FileType::Orc => {
-            let reader = orc_rust::ArrowReaderBuilder::try_new(bytes)?.build();
-            reader.map(|b| Ok(b?)).collect()
-        }
-        #[cfg(not(feature = "orc"))]
-        FileType::Orc => Err(crate::error::GraphArError::from(std::io::Error::other(
-            "graphar was built without the `orc` feature — ORC is not compiled in. \
-             Rebuild with `--features orc`.",
-        ))),
-        FileType::ArrowIpc => {
-            let reader = arrow::ipc::reader::FileReader::try_new(Cursor::new(bytes), None)?;
-            reader.map(|b| Ok(b?)).collect()
-        }
-    }
+    format_for(file_type)?.read_bytes(bytes, None)
 }
 
 /// Encode batches into the on-disk representation of `file_type`.
@@ -223,53 +189,7 @@ pub fn write_chunk_bytes(batches: &[RecordBatch], file_type: &FileType) -> Resul
     if batches.is_empty() {
         return Ok(Vec::new());
     }
-    let schema = batches[0].schema();
-    let mut out = Vec::new();
-    match file_type {
-        FileType::Parquet => {
-            let mut writer = parquet::arrow::ArrowWriter::try_new(
-                &mut out,
-                schema.clone(),
-                Some(crate::io::parquet::writer_properties(&schema)),
-            )?;
-            for batch in batches {
-                writer.write(batch)?;
-            }
-            writer.close()?;
-        }
-        FileType::Csv => {
-            let mut writer = arrow_csv::WriterBuilder::new()
-                .with_header(true)
-                .build(&mut out);
-            for batch in batches {
-                writer.write(batch)?;
-            }
-        }
-        FileType::Json => {
-            let mut writer = arrow::json::LineDelimitedWriter::new(&mut out);
-            writer.write_batches(&batches.iter().collect::<Vec<_>>())?;
-            writer.finish()?;
-        }
-        #[cfg(feature = "orc")]
-        FileType::Orc => {
-            crate::io::orc::write_to(&mut out, batches)?;
-        }
-        #[cfg(not(feature = "orc"))]
-        FileType::Orc => {
-            return Err(crate::error::GraphArError::from(std::io::Error::other(
-                "graphar was built without the `orc` feature — ORC is not compiled in. \
-                 Rebuild with `--features orc`.",
-            )));
-        }
-        FileType::ArrowIpc => {
-            let mut writer = arrow::ipc::writer::FileWriter::try_new(&mut out, &schema)?;
-            for batch in batches {
-                writer.write(batch)?;
-            }
-            writer.finish()?;
-        }
-    }
-    Ok(out)
+    format_for(file_type)?.write_bytes(batches)
 }
 
 /// A GraphAr chunk store rooted at a prefix inside any `object_store` backend.

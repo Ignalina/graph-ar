@@ -75,7 +75,7 @@ fn chunk_roundtrip_all_filetypes_preserve_rows_and_columns() {
 fn chunk_roundtrip_light_timing() {
     let batch = sample_batch(1000);
     let n = 100u32;
-    for ft in [FileType::Parquet, FileType::ArrowIpc] {
+    for ft in [FileType::Parquet, FileType::Csv] {
         let t = Instant::now();
         for _ in 0..n {
             let bytes = write_chunk_bytes(std::slice::from_ref(&batch), &ft).unwrap();

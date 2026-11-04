@@ -126,26 +126,66 @@ impl<'de> Deserialize<'de> for DataType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
+/// A chunk format, as named in the info files. The spec's formats are the
+/// plain variants; any other name is an [`FileType::Extension`], served by a
+/// [`crate::PayloadFormat`] registered under that name.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum FileType {
     #[default]
     Parquet,
     Orc,
     Csv,
     Json,
-    ArrowIpc,
+    /// A format outside the spec; see [`crate::register_format`].
+    Extension(String),
 }
 
 impl FileType {
-    pub fn extension(&self) -> &'static str {
+    /// The `file_type` value in the info files.
+    pub fn name(&self) -> &str {
         match self {
             FileType::Parquet => "parquet",
             FileType::Orc => "orc",
             FileType::Csv => "csv",
             FileType::Json => "json",
-            FileType::ArrowIpc => "arrow",
+            FileType::Extension(name) => name,
         }
+    }
+
+    /// The format with this `file_type` value.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "parquet" => FileType::Parquet,
+            "orc" => FileType::Orc,
+            "csv" => FileType::Csv,
+            "json" => FileType::Json,
+            other => FileType::Extension(other.to_string()),
+        }
+    }
+
+    /// The format's file extension. An unregistered
+    /// [`FileType::Extension`] uses its name.
+    pub fn extension(&self) -> String {
+        crate::format::format_for(self)
+            .map(|f| f.extension().to_string())
+            .unwrap_or_else(|_| self.name().to_string())
+    }
+}
+
+impl Serialize for FileType {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for FileType {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Ok(FileType::from_name(&String::deserialize(deserializer)?))
     }
 }
 

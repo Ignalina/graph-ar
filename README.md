@@ -15,7 +15,7 @@ nothing is published from here.
 |---|---|
 | Info files | `GraphInfo`, `VertexInfo`, `EdgeInfo`, `PropertyGroup`, `Property`, `AdjListInfo`: load and save `*.graph.yml`, `*.vertex.yml`, `*.edge.yml` |
 | Value types | `bool`, `int32`, `int64`, `float`, `double`, `string`, `date`, `timestamp`, `list<T>` of each scalar |
-| Chunk formats | Parquet, CSV, ORC (feature `orc`), JSON, plus Arrow IPC (not in the upstream `FileType` set) |
+| Chunk formats | Parquet (default), ORC (feature `orc`), CSV, JSON: the spec's `FileType` set. Other formats plug in through the `PayloadFormat` trait |
 | Layout | `chunk<N>` files, `_graphArVertexIndex` / `_graphArSrcIndex` / `_graphArDstIndex` / `_graphArOffset` columns, `vertex_count` and `edge_count<N>` files |
 | Write | row builders (`VerticesBuilder`, `EdgesBuilder`) and table writers (`write_vertex_table`, `write_edge_table`) for all four adjacency list types, offsets for ordered lists |
 | Read | `VertexReader` (per group, merged, by property), `EdgeReader` (adjacency list, offsets, property groups, `read_csr`, `neighbors`) |
