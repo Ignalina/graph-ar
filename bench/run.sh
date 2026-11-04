@@ -73,6 +73,18 @@ for ds in $DATASETS; do
         done
       done
     done
+    # The graphs the reads use: one more table write per writer, retried
+    # until it succeeds (the C++ table writer fails now and then, see the
+    # error rows), so a failed timed run never leaves a partial graph behind.
+    for impl in $impls; do
+      bin=$NATIVE; [ "$impl" = cpp ] && bin=$CPP
+      g=$W/out/$ds-$fmt-$impl-table
+      for try in 1 2 3 4 5; do
+        clean "$g"
+        if "$bin" write table "$input" "$info" "$g" > /dev/null 2>&1; then break; fi
+        echo "{\"label\":\"$LABEL\",\"dataset\":\"$ds\",\"format\":\"$fmt\",\"graph\":\"$impl-table\",\"run\":0,\"error\":\"reference write failed, try $try\",\"cmd\":\"$bin write table\"}" >> "$OUT"
+      done
+    done
     if [ -x "$GRS" ] && [ "$fmt" != arrow ]; then
       for r in $(seq 1 "$RUNS"); do
         g=$W/out/$ds-$fmt-graphar-rs-builder

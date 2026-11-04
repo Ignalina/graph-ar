@@ -193,13 +193,19 @@ static void write(const std::string& api, const std::string& input,
   const int64_t n = vertices->num_rows();
   const auto t = graphar::AdjListType::ordered_by_source;
 
+  // Without explicit options the C++ writers write Parquet uncompressed;
+  // ask for ZSTD, the native crate's default, so both write the same codec.
+  graphar::WriterOptions::ParquetOptionBuilder pb;
+  pb.compression(arrow::Compression::ZSTD);
+  auto wopt = pb.build();
+
   auto t0 = Clock::now();
   if (api == "table") {
-    auto w = UNWRAP(graphar::VertexPropertyWriter::Make(g.vi, g.prefix));
+    auto w = UNWRAP(graphar::VertexPropertyWriter::Make(g.vi, g.prefix, wopt));
     CHECK_OK(w->WriteTable(vertices, 0));
     CHECK_OK(w->WriteVerticesNum(n));
   } else {
-    auto b = UNWRAP(graphar::builder::VerticesBuilder::Make(g.vi, g.prefix));
+    auto b = UNWRAP(graphar::builder::VerticesBuilder::Make(g.vi, g.prefix, wopt));
     std::vector<std::shared_ptr<arrow::Array>> cols;
     for (auto& c : vertices->columns()) cols.push_back(c->chunk(0));
     auto names = vertices->schema()->field_names();
@@ -219,7 +225,7 @@ static void write(const std::string& api, const std::string& input,
   if (api == "table") {
     // The C++ table API writes one vertex chunk at a time; partition by the
     // source vertex chunk first (counted in the time).
-    auto w = UNWRAP(graphar::EdgeChunkWriter::Make(g.ei, g.prefix, t));
+    auto w = UNWRAP(graphar::EdgeChunkWriter::Make(g.ei, g.prefix, t, wopt));
     const int64_t vchunk = g.ei->GetSrcChunkSize();
     const int64_t parts = (n + vchunk - 1) / vchunk;
     auto src = std::static_pointer_cast<arrow::Int64Array>(
@@ -242,7 +248,7 @@ static void write(const std::string& api, const std::string& input,
       }
     }
   } else {
-    auto b = UNWRAP(graphar::builder::EdgesBuilder::Make(g.ei, g.prefix, t, n));
+    auto b = UNWRAP(graphar::builder::EdgesBuilder::Make(g.ei, g.prefix, t, n, wopt));
     auto src = std::static_pointer_cast<arrow::Int64Array>(
         edges->GetColumnByName("_graphArSrcIndex")->chunk(0));
     auto dst = std::static_pointer_cast<arrow::Int64Array>(
