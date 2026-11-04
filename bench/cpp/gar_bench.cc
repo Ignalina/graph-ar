@@ -29,6 +29,7 @@
 #include <any>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -143,32 +144,84 @@ static uint64_t dir_bytes(const fs::path& p) {
   return total;
 }
 
+// Order-independent sum, the same as ../rust: integers, days and milliseconds
+// by value, floats by their bits, booleans counted, strings by length, lists
+// by their length plus their items.
+template <typename ArrayT>
+static uint64_t sum_strings(const std::shared_ptr<arrow::Array>& a) {
+  auto s = std::static_pointer_cast<ArrayT>(a);
+  uint64_t sum = 0;
+  for (int64_t i = 0; i < s->length(); i++)
+    if (s->IsValid(i)) sum += s->value_length(i);
+  return sum;
+}
+
+template <typename ArrayT, typename F>
+static uint64_t sum_values(const std::shared_ptr<arrow::Array>& a, F f) {
+  auto p = std::static_pointer_cast<ArrayT>(a);
+  uint64_t sum = 0;
+  for (int64_t i = 0; i < p->length(); i++)
+    if (p->IsValid(i)) sum += f(p->Value(i));
+  return sum;
+}
+
+static uint64_t checksum_array(const std::shared_ptr<arrow::Array>& a) {
+  auto widen = [](auto v) {
+    return static_cast<uint64_t>(static_cast<int64_t>(v));
+  };
+  switch (a->type_id()) {
+    case arrow::Type::INT64:
+      return sum_values<arrow::Int64Array>(a, widen);
+    case arrow::Type::INT32:
+      return sum_values<arrow::Int32Array>(a, widen);
+    case arrow::Type::DATE32:
+      return sum_values<arrow::Date32Array>(a, widen);
+    case arrow::Type::TIMESTAMP: {
+      auto unit =
+          std::static_pointer_cast<arrow::TimestampType>(a->type())->unit();
+      int64_t div = unit == arrow::TimeUnit::NANO    ? 1000000
+                    : unit == arrow::TimeUnit::MICRO ? 1000
+                                                     : 1;
+      return sum_values<arrow::TimestampArray>(
+          a, [div](int64_t v) { return static_cast<uint64_t>(v / div); });
+    }
+    case arrow::Type::FLOAT:
+      return sum_values<arrow::FloatArray>(a, [](float v) {
+        uint32_t bits;
+        std::memcpy(&bits, &v, sizeof bits);
+        return static_cast<uint64_t>(bits);
+      });
+    case arrow::Type::DOUBLE:
+      return sum_values<arrow::DoubleArray>(a, [](double v) {
+        uint64_t bits;
+        std::memcpy(&bits, &v, sizeof bits);
+        return bits;
+      });
+    case arrow::Type::BOOL:
+      return sum_values<arrow::BooleanArray>(
+          a, [](bool v) { return static_cast<uint64_t>(v); });
+    case arrow::Type::STRING:
+      return sum_strings<arrow::StringArray>(a);
+    case arrow::Type::LARGE_STRING:
+      return sum_strings<arrow::LargeStringArray>(a);
+    case arrow::Type::LIST: {
+      auto l = std::static_pointer_cast<arrow::ListArray>(a);
+      uint64_t sum = 0;
+      for (int64_t i = 0; i < l->length(); i++) {
+        if (l->IsNull(i)) continue;
+        auto v = l->value_slice(i);
+        sum += v->length() + checksum_array(v);
+      }
+      return sum;
+    }
+    default:
+      return a->length();
+  }
+}
+
 static uint64_t checksum_column(const std::shared_ptr<arrow::ChunkedArray>& c) {
   uint64_t sum = 0;
-  for (auto& chunk : c->chunks()) {
-    switch (chunk->type_id()) {
-      case arrow::Type::INT64: {
-        auto a = std::static_pointer_cast<arrow::Int64Array>(chunk);
-        for (int64_t i = 0; i < a->length(); i++)
-          if (a->IsValid(i)) sum += static_cast<uint64_t>(a->Value(i));
-        break;
-      }
-      case arrow::Type::STRING: {
-        auto a = std::static_pointer_cast<arrow::StringArray>(chunk);
-        for (int64_t i = 0; i < a->length(); i++)
-          if (a->IsValid(i)) sum += a->value_length(i);
-        break;
-      }
-      case arrow::Type::LARGE_STRING: {
-        auto a = std::static_pointer_cast<arrow::LargeStringArray>(chunk);
-        for (int64_t i = 0; i < a->length(); i++)
-          if (a->IsValid(i)) sum += a->value_length(i);
-        break;
-      }
-      default:
-        sum += chunk->length();
-    }
-  }
+  for (auto& chunk : c->chunks()) sum += checksum_array(chunk);
   return sum;
 }
 

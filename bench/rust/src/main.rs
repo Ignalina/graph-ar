@@ -22,6 +22,7 @@
 //! ```text
 //! graphar-bench prep-mimir <input-dir> <dump-dir>...
 //! graphar-bench prep-gar   <input-dir> <graph.yml> <vertex-type> <src> <edge> <dst>
+//! graphar-bench prep-types <input-dir> <lists|scalars>
 //! graphar-bench info       <input-dir> <format> <out-info-dir>
 //! graphar-bench write      <table|builder> <input-dir> <info-dir> <out-graph-dir>
 //! graphar-bench read-prop  <graph-dir> <property>
@@ -67,6 +68,7 @@ fn main() -> R<()> {
     match a(0) {
         "prep-mimir" => prep_mimir(Path::new(a(1)), &args[2..]),
         "prep-gar" => prep_gar(Path::new(a(1)), Path::new(a(2)), a(3), [a(4), a(5), a(6)]),
+        "prep-types" => prep_types(Path::new(a(1)), a(2) == "lists"),
         "info" => info(Path::new(a(1)), a(2), Path::new(a(3))),
         "write" => write(a(1), Path::new(a(2)), Path::new(a(3)), Path::new(a(4))),
         "read-prop" => read_prop(Path::new(a(1)), a(2)),
@@ -102,26 +104,22 @@ fn write_parquet(path: &Path, batch: &RecordBatch) -> R<()> {
     Ok(())
 }
 
-fn type_name(dt: &ArrowDataType) -> &'static str {
+fn type_name(dt: &ArrowDataType) -> String {
     match dt {
-        ArrowDataType::Int64 | ArrowDataType::UInt32 => "int64",
-        ArrowDataType::Int32 => "int32",
-        ArrowDataType::Float64 => "double",
-        ArrowDataType::Float32 => "float",
-        ArrowDataType::Boolean => "bool",
-        _ => "string",
+        ArrowDataType::Int64 | ArrowDataType::UInt32 => "int64".into(),
+        ArrowDataType::Int32 => "int32".into(),
+        ArrowDataType::Float64 => "double".into(),
+        ArrowDataType::Float32 => "float".into(),
+        ArrowDataType::Boolean => "bool".into(),
+        ArrowDataType::Date32 => "date".into(),
+        ArrowDataType::Timestamp(..) => "timestamp".into(),
+        ArrowDataType::List(f) => format!("list<{}>", type_name(f.data_type())),
+        _ => "string".into(),
     }
 }
 
 fn data_type(name: &str) -> DataType {
-    match name {
-        "int64" => DataType::Int64,
-        "int32" => DataType::Int32,
-        "double" => DataType::Double,
-        "float" => DataType::Float,
-        "bool" => DataType::Bool,
-        _ => DataType::String,
-    }
+    DataType::parse(name).unwrap_or(DataType::String)
 }
 
 /// schema.json: vertex/edge type names, property groups (lists of column
@@ -346,6 +344,105 @@ fn er_vertex_chunks(er: &EdgeReader, t: &AdjListType) -> u64 {
     er.iter_vertex_chunks(t).count() as u64
 }
 
+/// A small graph with a column of every value type, some of them null, to
+/// check that the implementations agree on each type.
+fn prep_types(out: &Path, lists: bool) -> R<()> {
+    std::fs::create_dir_all(out)?;
+    let n = 1000i64;
+    let m = 3000i64;
+    let some = |i: i64| i % 7 != 3;
+    let date = |i: i64| (some(i)).then_some(18_000 + i as i32);
+    let ts = |i: i64| (some(i)).then_some(1_555_000_000_123 + i * 1000);
+    fn list_col(
+        n: i64,
+        item: ArrowDataType,
+        values: ArrayRef,
+        per: fn(i64) -> usize,
+    ) -> ArrayRef {
+        let lengths: Vec<usize> = (0..n).map(per).collect();
+        let field = Arc::new(Field::new("item", item, true));
+        let total: usize = lengths.iter().sum();
+        Arc::new(arrow_array::ListArray::new(
+            field,
+            arrow::buffer::OffsetBuffer::from_lengths(lengths),
+            values.slice(0, total),
+            None,
+        ))
+    }
+    let per = |i: i64| (i % 4) as usize;
+    let total = 4 * n as usize;
+    let mut vf = vec![
+        Field::new("id", ArrowDataType::Int64, false),
+        Field::new("b", ArrowDataType::Boolean, true),
+        Field::new("i", ArrowDataType::Int32, true),
+        Field::new("f", ArrowDataType::Float32, true),
+        Field::new("d", ArrowDataType::Float64, true),
+        Field::new("s", ArrowDataType::Utf8, true),
+        Field::new("day", ArrowDataType::Date32, true),
+        Field::new("ts", ArrowDataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None), true),
+    ];
+    let mut vc: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from_iter_values(0..n)),
+        Arc::new(arrow_array::BooleanArray::from_iter((0..n).map(|i| some(i).then_some(i % 2 == 0)))),
+        Arc::new(arrow_array::Int32Array::from_iter((0..n).map(|i| some(i).then_some(i as i32 - 5)))),
+        Arc::new(arrow_array::Float32Array::from_iter((0..n).map(|i| some(i).then_some(i as f32 * 0.5)))),
+        Arc::new(arrow_array::Float64Array::from_iter((0..n).map(|i| some(i).then_some(i as f64 / 3.0)))),
+        Arc::new(StringArray::from_iter((0..n).map(|i| some(i).then(|| format!("name {i}"))))),
+        Arc::new(arrow_array::Date32Array::from_iter((0..n).map(date))),
+        Arc::new(arrow_array::TimestampMillisecondArray::from_iter((0..n).map(ts))),
+    ];
+    let mut groups: Vec<&[&str]> = vec![&["id"], &["b", "i", "f", "d", "s"], &["day", "ts"]];
+    if lists {
+        let items = |t: ArrowDataType, a: ArrayRef| list_col(n, t, a, per);
+        let per_len: usize = (0..n).map(per).sum();
+        assert!(per_len <= total);
+        for (name, t, a) in [
+            ("li", ArrowDataType::Int32, Arc::new(arrow_array::Int32Array::from_iter_values((0..total as i32).map(|k| k - 9))) as ArrayRef),
+            ("ll", ArrowDataType::Int64, Arc::new(Int64Array::from_iter_values((0..total as i64).map(|k| k * 1000))) as ArrayRef),
+            ("lf", ArrowDataType::Float32, Arc::new(arrow_array::Float32Array::from_iter_values((0..total).map(|k| k as f32 * 0.25))) as ArrayRef),
+            ("ld", ArrowDataType::Float64, Arc::new(arrow_array::Float64Array::from_iter_values((0..total).map(|k| k as f64 / 7.0))) as ArrayRef),
+            ("ls", ArrowDataType::Utf8, Arc::new(StringArray::from_iter_values((0..total).map(|k| format!("item {k}")))) as ArrayRef),
+        ] {
+            let c = items(t, a);
+            vf.push(Field::new(name, c.data_type().clone(), true));
+            vc.push(c);
+        }
+        groups.push(&["li", "ll", "lf", "ld", "ls"]);
+    }
+    let vertices = RecordBatch::try_new(Arc::new(Schema::new(vf)), vc)?;
+    let src: Vec<i64> = (0..m).map(|e| (e * 37) % n).collect();
+    let dst: Vec<i64> = (0..m).map(|e| (e * 101 + 7) % n).collect();
+    let mut ef = vec![
+        Field::new(SRC_INDEX_COL, ArrowDataType::Int64, false),
+        Field::new(DST_INDEX_COL, ArrowDataType::Int64, false),
+        Field::new("since", ArrowDataType::Date32, true),
+        Field::new("at", ArrowDataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None), true),
+    ];
+    let mut ec: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from(src)),
+        Arc::new(Int64Array::from(dst)),
+        Arc::new(arrow_array::Date32Array::from_iter((0..m).map(date))),
+        Arc::new(arrow_array::TimestampMillisecondArray::from_iter((0..m).map(ts))),
+    ];
+    let mut egroups: Vec<&[&str]> = vec![&["since", "at"]];
+    if lists {
+        let c = list_col(
+            m,
+            ArrowDataType::Float64,
+            Arc::new(arrow_array::Float64Array::from_iter_values((0..4 * m).map(|k| k as f64 / 9.0))),
+            per,
+        );
+        ef.push(Field::new("w", c.data_type().clone(), true));
+        ec.push(c);
+        egroups.push(&["w"]);
+    }
+    let edges = RecordBatch::try_new(Arc::new(Schema::new(ef)), ec)?;
+    write_parquet(&out.join("vertices.parquet"), &vertices)?;
+    write_parquet(&out.join("edges.parquet"), &edges)?;
+    write_schema(out, &vertices, &edges, ["node", "node", "edge", "node"], &groups, &egroups, [100, 256])?;
+    Ok(())
+}
+
 // ----------------------------------------------------------------- info files
 
 fn load_schema(input: &Path) -> R<Value> {
@@ -530,10 +627,23 @@ fn value_at(c: &ArrayRef, i: usize) -> Option<PropertyValue> {
     if c.is_null(i) {
         return None;
     }
+    use arrow_array::types::{Date32Type, Float32Type, Float64Type, Int32Type, Int64Type, TimestampMillisecondType};
     Some(match c.data_type() {
-        ArrowDataType::Int64 => PropertyValue::Int64(c.as_any().downcast_ref::<Int64Array>()?.value(i)),
+        ArrowDataType::Boolean => PropertyValue::Bool(c.as_boolean().value(i)),
+        ArrowDataType::Int32 => PropertyValue::Int32(c.as_primitive::<Int32Type>().value(i)),
+        ArrowDataType::Int64 => PropertyValue::Int64(c.as_primitive::<Int64Type>().value(i)),
+        ArrowDataType::Float32 => PropertyValue::Float(c.as_primitive::<Float32Type>().value(i)),
+        ArrowDataType::Float64 => PropertyValue::Double(c.as_primitive::<Float64Type>().value(i)),
+        ArrowDataType::Date32 => PropertyValue::Date(c.as_primitive::<Date32Type>().value(i)),
+        ArrowDataType::Timestamp(..) => {
+            PropertyValue::Timestamp(c.as_primitive::<TimestampMillisecondType>().value(i))
+        }
         ArrowDataType::Utf8 => PropertyValue::String(c.as_string::<i32>().value(i).to_string()),
         ArrowDataType::Utf8View => PropertyValue::String(c.as_string_view().value(i).to_string()),
+        ArrowDataType::List(_) => {
+            let items = c.as_list::<i32>().value(i);
+            PropertyValue::List((0..items.len()).filter_map(|k| value_at(&items, k)).collect())
+        }
         _ => return None,
     })
 }
@@ -574,15 +684,31 @@ fn edge_threads(r: EdgeReader) -> EdgeReader {
     }
 }
 
+/// Order-independent sum over a column, the same in ../cpp: integers, days and
+/// milliseconds by value, floats by their bits, booleans counted, strings by
+/// length, lists by their length plus their items.
 fn checksum_column(c: &dyn Array) -> u64 {
+    use arrow_array::types::{
+        Date32Type, Float32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType,
+        TimestampMillisecondType, TimestampNanosecondType,
+    };
+    let add = |it: &mut dyn Iterator<Item = u64>| it.fold(0u64, u64::wrapping_add);
     match c.data_type() {
-        ArrowDataType::Int64 => c
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap()
-            .iter()
-            .flatten()
-            .fold(0u64, |a, v| a.wrapping_add(v as u64)),
+        ArrowDataType::Int64 => add(&mut c.as_primitive::<Int64Type>().iter().flatten().map(|v| v as u64)),
+        ArrowDataType::Int32 => add(&mut c.as_primitive::<Int32Type>().iter().flatten().map(|v| v as i64 as u64)),
+        ArrowDataType::Date32 => add(&mut c.as_primitive::<Date32Type>().iter().flatten().map(|v| v as i64 as u64)),
+        ArrowDataType::Timestamp(arrow_schema::TimeUnit::Millisecond, _) => {
+            add(&mut c.as_primitive::<TimestampMillisecondType>().iter().flatten().map(|v| v as u64))
+        }
+        ArrowDataType::Timestamp(arrow_schema::TimeUnit::Microsecond, _) => {
+            add(&mut c.as_primitive::<TimestampMicrosecondType>().iter().flatten().map(|v| (v / 1000) as u64))
+        }
+        ArrowDataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, _) => {
+            add(&mut c.as_primitive::<TimestampNanosecondType>().iter().flatten().map(|v| (v / 1_000_000) as u64))
+        }
+        ArrowDataType::Float32 => add(&mut c.as_primitive::<Float32Type>().iter().flatten().map(|v| v.to_bits() as u64)),
+        ArrowDataType::Float64 => add(&mut c.as_primitive::<Float64Type>().iter().flatten().map(|v| v.to_bits())),
+        ArrowDataType::Boolean => c.as_boolean().iter().flatten().filter(|v| *v).count() as u64,
         ArrowDataType::Utf8 => {
             let s = c.as_string::<i32>();
             (0..s.len()).filter(|&i| s.is_valid(i)).map(|i| s.value(i).len() as u64).sum()
@@ -590,6 +716,13 @@ fn checksum_column(c: &dyn Array) -> u64 {
         ArrowDataType::LargeUtf8 => {
             let s = c.as_string::<i64>();
             (0..s.len()).filter(|&i| s.is_valid(i)).map(|i| s.value(i).len() as u64).sum()
+        }
+        ArrowDataType::List(_) => {
+            let l = c.as_list::<i32>();
+            (0..l.len()).filter(|&i| l.is_valid(i)).fold(0u64, |a, i| {
+                let v = l.value(i);
+                a.wrapping_add(v.len() as u64).wrapping_add(checksum_column(v.as_ref()))
+            })
         }
         _ => c.len() as u64,
     }

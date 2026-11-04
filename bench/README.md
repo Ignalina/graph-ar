@@ -33,6 +33,13 @@ run doubles as an interoperability check: the `check` object of a read
 (row counts, CSR sums, column sums) must be the same for every reader and
 writer.
 
+## Value types
+
+`types.sh <work-dir> <testing-dir>` checks every value type between the
+implementations: a generated graph with a column of each type, some of them
+null, and the upstream `ldbc_sample_with_feature` graph. Each writer writes,
+each reader scans, and the sums must match.
+
 ## Inputs
 
 An input dir holds `vertices.parquet`, `edges.parquet` (with

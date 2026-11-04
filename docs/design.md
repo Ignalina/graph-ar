@@ -60,12 +60,13 @@ structure such as a GraphBLAS matrix.
 
 | gap | state |
 |---|---|
-| `list<T>` element types | `DataType::List` is `list<string>` only; info files with `list<float>` etc. do not load |
-| `date` and `timestamp` property values in the row builders | `PropertyValue` has no date/timestamp variant; the table writers take Arrow `Date32` / `Timestamp(ms)` columns |
+| `list<T>` in CSV and ORC | CSV has no list form; orc-rust 0.9 has no list encoder, so writing one is an error (reading works). Parquet, JSON and Arrow IPC write them |
 | Labels (`labels`, `:LABEL` column) | not modelled |
 | `extra_info`, `cardinality` | not modelled |
 | Filter pushdown and column projection inside a group | not implemented; row-window reads exist for point lookups (`EdgeReader::neighbors`, `read_adj_list_rows`) |
 | High-level collections and iterators (`VerticesCollection`, `EdgesCollection`) | not implemented; readers return Arrow batches |
 | Info files on object stores | `GraphInfo::load` reads local files; chunks can be on object stores through `ChunkStore` |
 | Edge `vertex_count` of the non-aligned side | read only when an adjacency list aligned by that side exists |
+| `time` values in the row builders | `time` is not a GraphAr C++ type; the row builders return an error |
+| ORC strings | orc-rust 0.9 writes them directly, without dictionary encoding; chunks are ZSTD-compressed |
 | Arrow IPC chunk format | supported here, not part of the upstream `FileType` set |
