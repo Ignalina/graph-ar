@@ -94,6 +94,22 @@ mod layout {
     }
 
     #[test]
+    fn empty_graph_prefix_is_not_written() {
+        // The C++ YAML reader rejects `prefix: ''`; an empty prefix is
+        // omitted, which upstream reads as "relative to the info file".
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("g.graph.yml");
+        crate::metadata::GraphInfo::new("g", "")
+            .with_vertex("v.vertex.yml")
+            .save(&p)
+            .unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("prefix"), "{text}");
+        assert!(!text.contains("''"), "{text}");
+        assert_eq!(crate::metadata::GraphInfo::load(&p).unwrap().prefix, "");
+    }
+
+    #[test]
     fn chunk_paths_are_extensionless() {
         let vi = person(10);
         assert_eq!(
