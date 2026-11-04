@@ -94,6 +94,46 @@ mod layout {
     }
 
     #[test]
+    fn info_files_indent_sequences_like_upstream() {
+        // The C++ YAML reader needs block sequences indented under their key,
+        // the way the upstream info files are written.
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("person.vertex.yml");
+        VertexInfo::new("person", 100)
+            .with_property_group(PropertyGroup::new(
+                vec![Property::new("id", DataType::Int64).primary()],
+                FileType::Parquet,
+            ))
+            .save(&p)
+            .unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        let expected = "type: person
+chunk_size: 100
+prefix: vertex/person/
+property_groups:
+  - properties:
+      - name: id
+        data_type: int64
+        is_primary: true
+        is_nullable: false
+    file_type: parquet
+version: gar/v1
+";
+        assert_eq!(text, expected);
+        assert_eq!(VertexInfo::load(&p).unwrap().property_groups.len(), 1);
+
+        let g = dir.path().join("g.graph.yml");
+        crate::metadata::GraphInfo::new("g", "")
+            .with_vertex("person.vertex.yml")
+            .save(&g)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&g).unwrap(),
+            "name: g\nvertices:\n  - person.vertex.yml\nversion: gar/v1\n"
+        );
+    }
+
+    #[test]
     fn empty_graph_prefix_is_not_written() {
         // The C++ YAML reader rejects `prefix: ''`; an empty prefix is
         // omitted, which upstream reads as "relative to the info file".
