@@ -24,15 +24,23 @@ use std::{
 
 use arrow_array::RecordBatch;
 use arrow_csv::{ReaderBuilder, WriterBuilder};
+use arrow_schema::Schema;
 
 use crate::error::Result;
 
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordBatch>> {
+    read_typed(path, None)
+}
+
+/// Read a CSV chunk. Column types are inferred from the first 100 rows, then
+/// every column named in `declared` takes the declared type and the reserved
+/// `_graphAr*` index columns are int64.
+pub fn read_typed(path: impl AsRef<Path>, declared: Option<&Schema>) -> Result<Vec<RecordBatch>> {
     let file = File::open(path.as_ref())?;
 
-    // Infer schema from first 100 rows then re-read.
     let format = arrow_csv::reader::Format::default().with_header(true);
-    let (schema, _) = format.infer_schema(&mut File::open(path.as_ref())?, Some(100))?;
+    let (inferred, _) = format.infer_schema(&mut File::open(path.as_ref())?, Some(100))?;
+    let schema = super::apply_declared_types(&inferred, declared);
 
     let reader = ReaderBuilder::new(Arc::new(schema))
         .with_header(true)

@@ -23,6 +23,7 @@ pub mod orc;
 pub mod parquet;
 
 use arrow_array::RecordBatch;
+use arrow_schema::{DataType as ArrowDataType, Field, Schema};
 use std::path::{Path, PathBuf};
 
 use crate::{error::Result, types::FileType};
@@ -41,6 +42,41 @@ pub fn read_chunk(path: impl AsRef<Path>, file_type: &FileType) -> Result<Vec<Re
         ))),
         FileType::ArrowIpc => ipc::read(path),
     }
+}
+
+/// Read a chunk, giving the text formats (CSV, JSON) the column types of
+/// `declared` (a property group's schema). Self-describing formats ignore it.
+pub fn read_chunk_typed(
+    path: impl AsRef<Path>,
+    file_type: &FileType,
+    declared: &Schema,
+) -> Result<Vec<RecordBatch>> {
+    match file_type {
+        FileType::Csv => csv::read_typed(path, Some(declared)),
+        FileType::Json => json::read_typed(path, Some(declared)),
+        _ => read_chunk(path, file_type),
+    }
+}
+
+/// `inferred` with the types of `declared` for the columns it names, and
+/// int64 for the reserved `_graphAr*` index columns.
+pub(crate) fn apply_declared_types(inferred: &Schema, declared: Option<&Schema>) -> Schema {
+    use crate::general_params::{DST_INDEX_COL, OFFSET_COL, SRC_INDEX_COL, VERTEX_INDEX_COL};
+    let fields: Vec<Field> = inferred
+        .fields()
+        .iter()
+        .map(|f| {
+            let name = f.name().as_str();
+            if let Some(d) = declared.and_then(|d| d.field_with_name(name).ok()) {
+                Field::new(name, d.data_type().clone(), true)
+            } else if [VERTEX_INDEX_COL, SRC_INDEX_COL, DST_INDEX_COL, OFFSET_COL].contains(&name) {
+                Field::new(name, ArrowDataType::Int64, true)
+            } else {
+                f.as_ref().clone()
+            }
+        })
+        .collect();
+    Schema::new(fields)
 }
 
 pub fn write_chunk(

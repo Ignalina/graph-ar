@@ -484,11 +484,18 @@ version: gar/v1
         let er = EdgeReader::open(ei.clone(), &base, &t).unwrap();
         let group = ei.property_groups[0].clone();
         let batches = er.read_property_group(&t, &group, 0).unwrap();
-        let field = batches[0].schema().field_with_name("creationDate").unwrap().clone();
+        let field = batches[0]
+            .schema()
+            .field_with_name("creationDate")
+            .unwrap()
+            .clone();
         assert_eq!(field.data_type(), &ArrowDataType::Utf8);
 
         let vi = VertexInfo::load(base.join("person.vertex.yml")).unwrap();
-        let merged = VertexReader::open(vi, &base).unwrap().read_merged().unwrap();
+        let merged = VertexReader::open(vi, &base)
+            .unwrap()
+            .read_merged()
+            .unwrap();
         assert_eq!(
             merged.schema().field_with_name("id").unwrap().data_type(),
             &ArrowDataType::Int64

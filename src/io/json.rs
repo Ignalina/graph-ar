@@ -28,8 +28,17 @@ use arrow_array::RecordBatch;
 use crate::error::Result;
 
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordBatch>> {
+    read_typed(path, None)
+}
+
+/// Read a JSON-lines chunk, with declared types as in [`super::csv::read_typed`].
+pub fn read_typed(
+    path: impl AsRef<Path>,
+    declared: Option<&arrow_schema::Schema>,
+) -> Result<Vec<RecordBatch>> {
     let mut reader = BufReader::new(File::open(path.as_ref())?);
-    let (schema, _) = infer_json_schema(&mut reader, None)?;
+    let (inferred, _) = infer_json_schema(&mut reader, None)?;
+    let schema = super::apply_declared_types(&inferred, declared);
     reader.seek(SeekFrom::Start(0))?;
 
     let reader = ReaderBuilder::new(Arc::new(schema)).build(reader)?;

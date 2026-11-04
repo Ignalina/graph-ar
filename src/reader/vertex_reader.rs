@@ -83,7 +83,7 @@ impl VertexReader {
                 self.chunk_count(),
             ));
         };
-        io::read_chunk(&full, &group.file_type)
+        io::read_chunk_typed(&full, &group.file_type, &group.arrow_schema())
     }
 
     /// Read every property group and merge them into one row-aligned batch

@@ -168,7 +168,7 @@ impl EdgeReader {
             ) else {
                 break;
             };
-            let mut batches = io::read_chunk(&path, &group.file_type)?;
+            let mut batches = io::read_chunk_typed(&path, &group.file_type, &group.arrow_schema())?;
             all.append(&mut batches);
             edge_chunk += 1;
         }
