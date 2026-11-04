@@ -271,7 +271,7 @@ The large graph is not public; `ldbc_sample` is what others can repeat at once. 
 See `bench/README.md`. In short:
 
 ```shell
-git clone --recurse-submodules ssh://git@git.gunnar.rs:2222/nordisk/graph-ar
+git clone --recurse-submodules ssh://anonymous@git.gunnar.rs:2222/nordisk/graph-ar
 cd graph-ar/bench
 podman build -t graphar-bench -f Containerfile .
 # inside the container: build GraphAr C++, gar_bench_cpp, graphar-bench, graphar-rs-bench (README)
