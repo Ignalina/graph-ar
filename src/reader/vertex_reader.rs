@@ -24,6 +24,17 @@ impl VertexReader {
         }
     }
 
+    /// Open a vertex type, taking the vertex count from its `vertex_count` file.
+    pub fn open(info: VertexInfo, base_dir: impl AsRef<Path>) -> Result<Self> {
+        let base = base_dir.as_ref();
+        let vertex_count = io::read_count(base.join(info.vertex_count_path()))?;
+        Ok(Self::new(info, base, vertex_count))
+    }
+
+    pub fn vertex_count(&self) -> u64 {
+        self.vertex_count
+    }
+
     pub fn vertex_info(&self) -> &VertexInfo {
         &self.info
     }
@@ -49,13 +60,12 @@ impl VertexReader {
         chunk_index: u64,
     ) -> Result<Vec<RecordBatch>> {
         let rel = self.info.chunk_path(group, chunk_index);
-        let full = self.base_dir.join(&rel);
-        if !full.exists() {
+        let Some(full) = io::resolve_chunk(self.base_dir.join(&rel), &group.file_type) else {
             return Err(GraphArError::ChunkOutOfRange(
                 chunk_index,
                 self.chunk_count(),
             ));
-        }
+        };
         io::read_chunk(&full, &group.file_type)
     }
 

@@ -5,15 +5,17 @@ use std::{
 };
 
 use arrow_array::{
-    ArrayRef, RecordBatch,
+    ArrayRef, Int64Array, RecordBatch,
     builder::{
         BooleanBuilder, Float32Builder, Float64Builder, Int32Builder, Int64Builder, ListBuilder,
         StringBuilder,
     },
 };
 
+use arrow_schema::{DataType as ArrowDataType, Field, Schema};
+
 use crate::{
-    error::Result,
+    error::{GraphArError, Result},
     io,
     metadata::{PropertyGroup, VertexInfo},
     types::DataType,
@@ -76,19 +78,27 @@ impl VerticesBuilder {
     }
 
     /// Flush all buffered vertices as chunked files, clearing the buffer.
+    /// Each chunk of each property group carries the `_graphArVertexIndex`
+    /// column, and the `vertex_count` file is written. Returns the number of
+    /// vertex chunks written.
     pub fn dump(&mut self) -> Result<u64> {
         let chunk_size = self.info.chunk_size as usize;
         let mut chunk_index = 0u64;
 
         for chunk in self.vertices.chunks(chunk_size) {
+            let start = chunk_index * self.info.chunk_size;
             for group in self.info.property_groups.iter() {
-                let batch = build_record_batch(chunk, group)?;
+                let batch = with_vertex_index(build_record_batch(chunk, group)?, start)?;
                 let rel = self.info.chunk_path(group, chunk_index);
                 let full = self.base_dir.join(&rel);
                 io::write_chunk(&full, &[batch], &group.file_type)?;
             }
             chunk_index += 1;
         }
+        io::write_count(
+            self.base_dir.join(self.info.vertex_count_path()),
+            self.vertices.len() as u64,
+        )?;
 
         self.vertices.clear();
         Ok(chunk_index)
@@ -97,6 +107,79 @@ impl VerticesBuilder {
     pub fn vertex_count(&self) -> usize {
         self.vertices.len()
     }
+}
+
+/// Prepend the absolute `_graphArVertexIndex` column (`start..start+rows`).
+pub(crate) fn with_vertex_index(batch: RecordBatch, start: u64) -> Result<RecordBatch> {
+    let rows = batch.num_rows() as i64;
+    let start = start as i64;
+    let index: ArrayRef = Arc::new(Int64Array::from_iter_values(start..start + rows));
+    let mut fields = vec![Arc::new(Field::new(
+        crate::general_params::VERTEX_INDEX_COL,
+        ArrowDataType::Int64,
+        false,
+    ))];
+    fields.extend(batch.schema().fields().iter().cloned());
+    let mut columns = vec![index];
+    columns.extend(batch.columns().iter().cloned());
+    Ok(RecordBatch::try_new(
+        Arc::new(Schema::new(fields)),
+        columns,
+    )?)
+}
+
+/// Write a whole vertex table: `table` holds one column per property (by
+/// name, in any order; extra columns are ignored), row `i` is vertex `i`.
+/// Columns are cast to the declared property type when they differ. Writes
+/// every property group's chunks plus `vertex_count`; returns the vertex count.
+pub fn write_vertex_table(
+    info: &VertexInfo,
+    base_dir: impl AsRef<Path>,
+    table: &RecordBatch,
+) -> Result<u64> {
+    let base = base_dir.as_ref();
+    let rows = table.num_rows() as u64;
+    let chunk_size = info.chunk_size;
+    for group in &info.property_groups {
+        let schema = group.arrow_schema();
+        let columns = project(table, &schema)?;
+        let mut chunk = 0u64;
+        while chunk * chunk_size < rows {
+            let start = chunk * chunk_size;
+            let len = chunk_size.min(rows - start) as usize;
+            let cols: Vec<ArrayRef> = columns
+                .iter()
+                .map(|c| c.slice(start as usize, len))
+                .collect();
+            let batch = with_vertex_index(RecordBatch::try_new(schema.clone(), cols)?, start)?;
+            io::write_chunk(
+                base.join(info.chunk_path(group, chunk)),
+                &[batch],
+                &group.file_type,
+            )?;
+            chunk += 1;
+        }
+    }
+    io::write_count(base.join(info.vertex_count_path()), rows)?;
+    Ok(rows)
+}
+
+/// Pick `schema`'s columns out of `table` by name, casting where the type differs.
+pub(crate) fn project(table: &RecordBatch, schema: &Schema) -> Result<Vec<ArrayRef>> {
+    schema
+        .fields()
+        .iter()
+        .map(|f| {
+            let col = table
+                .column_by_name(f.name())
+                .ok_or_else(|| GraphArError::PropertyNotFound(f.name().clone()))?;
+            if col.data_type() == f.data_type() {
+                Ok(col.clone())
+            } else {
+                Ok(arrow::compute::cast(col, f.data_type())?)
+            }
+        })
+        .collect()
 }
 
 /// Exposed for edge writer reuse.

@@ -6,7 +6,7 @@ pub mod orc;
 pub mod parquet;
 
 use arrow_array::RecordBatch;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{error::Result, types::FileType};
 
@@ -47,4 +47,48 @@ pub fn write_chunk(
         ))),
         FileType::ArrowIpc => ipc::write(path, batches),
     }
+}
+
+/// Find a chunk file on disk. The `gar/v1` layout names chunks `chunk<N>`
+/// with no extension; files written by older versions of this crate carry the
+/// format's extension (`chunk<N>.parquet`), so that name is tried second.
+pub fn resolve_chunk(path: impl AsRef<Path>, file_type: &FileType) -> Option<PathBuf> {
+    let path = path.as_ref();
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    let mut legacy = path.as_os_str().to_owned();
+    legacy.push(".");
+    legacy.push(file_type.extension());
+    let legacy = PathBuf::from(legacy);
+    legacy.is_file().then_some(legacy)
+}
+
+/// Read a `vertex_count` / `edge_count<N>` file: one little-endian int64.
+pub fn read_count(path: impl AsRef<Path>) -> Result<u64> {
+    let path = path.as_ref();
+    let raw = std::fs::read(path)?;
+    let bytes: [u8; 8] = raw.as_slice().try_into().map_err(|_| {
+        crate::error::GraphArError::Other(format!(
+            "{}: a count file holds 8 bytes, found {}",
+            path.display(),
+            raw.len()
+        ))
+    })?;
+    let n = i64::from_le_bytes(bytes);
+    u64::try_from(n).map_err(|_| {
+        crate::error::GraphArError::Other(format!("{}: negative count {n}", path.display()))
+    })
+}
+
+/// Write a count file as one little-endian int64, creating parent dirs.
+pub fn write_count(path: impl AsRef<Path>, count: u64) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let n = i64::try_from(count)
+        .map_err(|_| crate::error::GraphArError::Other(format!("count {count} exceeds i64")))?;
+    std::fs::write(path, n.to_le_bytes())?;
+    Ok(())
 }

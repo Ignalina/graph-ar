@@ -55,15 +55,17 @@ impl VertexInfo {
         vertex_count.div_ceil(self.chunk_size)
     }
 
-    /// Path to a specific vertex property chunk file (no leading slash).
+    /// Path to a specific vertex property chunk file (no leading slash). Chunk
+    /// files carry no extension, as in the upstream layout.
     pub fn chunk_path(&self, group: &PropertyGroup, chunk_index: u64) -> PathBuf {
         PathBuf::from(&self.prefix)
             .join(group.dir_name())
-            .join(format!(
-                "chunk{}.{}",
-                chunk_index,
-                group.file_type.extension()
-            ))
+            .join(format!("chunk{chunk_index}"))
+    }
+
+    /// Path of the `vertex_count` file (8-byte little-endian int64).
+    pub fn vertex_count_path(&self) -> PathBuf {
+        PathBuf::from(&self.prefix).join(crate::general_params::VERTEX_COUNT_FILE)
     }
 
     pub fn find_property_group(&self, property_name: &str) -> Option<&PropertyGroup> {

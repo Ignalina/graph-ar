@@ -45,7 +45,13 @@ pub fn merge_property_groups(groups: &[Vec<RecordBatch>]) -> Result<RecordBatch>
             )));
         }
         for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
-            if fields.iter().any(|f: &Field| f.name() == field.name()) {
+            let seen = fields.iter().any(|f: &Field| f.name() == field.name());
+            // Every group chunk carries the same `_graphArVertexIndex` column;
+            // keep the first one.
+            if seen && field.name() == crate::general_params::VERTEX_INDEX_COL {
+                continue;
+            }
+            if seen {
                 return Err(GraphArError::Other(format!(
                     "merge_property_groups: duplicate column '{}'",
                     field.name()

@@ -14,11 +14,9 @@
 //! `Vec<`[`ValidationIssue`]`>`: empty means conformant. The validator is
 //! read-only and never touches the network.
 //!
-//! It validates knut's own write convention — chunk files carry the format's
-//! file extension (`chunk0.parquet`). The upstream testdata corpus instead
-//! writes *extensionless* chunk files; [`ValidateOptions::extensionless_chunks`]
-//! relaxes the file-name check so the opt-in corpus test (gated on
-//! `GRAPHAR_TESTDATA`) can validate those graphs too.
+//! Chunk files are named `chunk<N>` with no extension, as the upstream
+//! libraries write them. [`ValidateOptions::legacy_extensions`] also accepts
+//! `chunk<N>.<ext>`, the names older versions of this crate wrote.
 
 use std::path::{Path, PathBuf};
 
@@ -89,10 +87,9 @@ impl std::fmt::Display for ValidationIssue {
 /// Tunables for the structural validator.
 #[derive(Debug, Clone)]
 pub struct ValidateOptions {
-    /// Accept extensionless chunk files (`chunk0` instead of `chunk0.parquet`).
-    /// The upstream `gar/v1` testdata corpus writes chunks this way; knut's own
-    /// writers always include the extension, so this defaults to `false`.
-    pub extensionless_chunks: bool,
+    /// Also accept `chunk<N>.<ext>` file names (written by older versions of
+    /// this crate). The spec name `chunk<N>` is always accepted.
+    pub legacy_extensions: bool,
     /// If `false`, a missing data chunk for a declared property group is only a
     /// warning rather than an error. Useful when validating just the info-file
     /// schema of a corpus whose chunk count isn't known ahead of time.
@@ -102,18 +99,18 @@ pub struct ValidateOptions {
 impl Default for ValidateOptions {
     fn default() -> Self {
         Self {
-            extensionless_chunks: false,
+            legacy_extensions: false,
             require_chunks: true,
         }
     }
 }
 
 impl ValidateOptions {
-    /// Lenient profile for reading the upstream testdata corpus: extensionless
-    /// chunk files are accepted and a missing chunk is a warning, not an error.
+    /// Lenient profile: legacy chunk names are accepted and a missing chunk is
+    /// a warning, not an error.
     pub fn corpus() -> Self {
         Self {
-            extensionless_chunks: true,
+            legacy_extensions: true,
             require_chunks: false,
         }
     }
@@ -566,14 +563,13 @@ fn check_chunk_sequence(
 
 /// Parse the chunk index out of a file name, honoring the extension policy.
 fn parse_chunk_index(name: &str, file_type: &FileType, opts: &ValidateOptions) -> Option<u64> {
-    let with_ext = format!(".{}", file_type.extension());
-    if let Some(rest) = name.strip_prefix("chunk") {
-        if let Some(idx) = rest.strip_suffix(&with_ext) {
-            return idx.parse::<u64>().ok();
-        }
-        if opts.extensionless_chunks {
-            return rest.parse::<u64>().ok();
-        }
+    let rest = name.strip_prefix("chunk")?;
+    if let Ok(idx) = rest.parse::<u64>() {
+        return Some(idx);
+    }
+    if opts.legacy_extensions {
+        let with_ext = format!(".{}", file_type.extension());
+        return rest.strip_suffix(&with_ext)?.parse::<u64>().ok();
     }
     None
 }

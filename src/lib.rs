@@ -2,6 +2,7 @@ mod spec_tests;
 mod tests;
 
 pub mod error;
+pub mod general_params;
 pub mod io;
 pub mod merge;
 pub mod metadata;
@@ -12,6 +13,7 @@ pub mod validate;
 pub mod writer;
 
 pub use error::{GraphArError, Result};
+pub use general_params::{DST_INDEX_COL, OFFSET_COL, SRC_INDEX_COL, VERTEX_INDEX_COL};
 pub use merge::merge_property_groups;
 pub use metadata::{AdjListInfo, EdgeInfo, GraphInfo, Property, PropertyGroup, VertexInfo};
 pub use reader::{EdgeReader, VertexReader};
@@ -20,7 +22,10 @@ pub use validate::{
     Severity, ValidateOptions, ValidationIssue, validate_edge_info, validate_graph_dir,
     validate_graph_dir_with, validate_graph_info, validate_vertex_info,
 };
-pub use writer::{Edge, EdgesBuilder, PropertyValue, Vertex, VerticesBuilder};
+pub use writer::{
+    Edge, EdgesBuilder, PropertyValue, Vertex, VerticesBuilder, write_edge_table,
+    write_vertex_table,
+};
 
 /// **Introspection / emit marker** — record one functional-status row for the
 /// nornir test matrix. Wraps `nornir_testmatrix::functional_status` behind the

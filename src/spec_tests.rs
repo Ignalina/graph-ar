@@ -13,8 +13,7 @@ mod layout {
     use tempfile::tempdir;
 
     use crate::{
-        DST_INDEX_COL, OFFSET_COL, SRC_INDEX_COL, VERTEX_INDEX_COL,
-        io,
+        DST_INDEX_COL, OFFSET_COL, SRC_INDEX_COL, VERTEX_INDEX_COL, io,
         metadata::{AdjListInfo, EdgeInfo, Property, PropertyGroup, VertexInfo},
         reader::{EdgeReader, VertexReader},
         types::{AdjListType, DataType, FileType},
@@ -123,22 +122,30 @@ mod layout {
         // Count file: 8 bytes, little-endian int64, as upstream writes it.
         let raw = std::fs::read(base.join("vertex/person/vertex_count")).unwrap();
         assert_eq!(raw, 25i64.to_le_bytes().to_vec());
-        assert_eq!(io::read_count(base.join(vi.vertex_count_path())).unwrap(), 25);
+        assert_eq!(
+            io::read_count(base.join(vi.vertex_count_path())).unwrap(),
+            25
+        );
 
         // Every group's chunk carries the absolute _graphArVertexIndex.
-        let chunk2 = io::read_chunk(
-            base.join("vertex/person/name/chunk2"),
-            &FileType::Parquet,
-        )
-        .unwrap();
-        assert_eq!(concat_i64(&chunk2, VERTEX_INDEX_COL), (20..25).collect::<Vec<_>>());
+        let chunk2 =
+            io::read_chunk(base.join("vertex/person/name/chunk2"), &FileType::Parquet).unwrap();
+        assert_eq!(
+            concat_i64(&chunk2, VERTEX_INDEX_COL),
+            (20..25).collect::<Vec<_>>()
+        );
 
         // open() takes the count from the file; read_merged keeps one index column.
         let vr = VertexReader::open(vi, base).unwrap();
         assert_eq!(vr.vertex_count(), 25);
         let merged = vr.read_merged().unwrap();
         assert_eq!(merged.num_rows(), 25);
-        let names: Vec<_> = merged.schema().fields().iter().map(|f| f.name().clone()).collect();
+        let names: Vec<_> = merged
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
         assert_eq!(names, vec![VERTEX_INDEX_COL, "id", "name"]);
     }
 
@@ -234,7 +241,9 @@ mod layout {
         let table = RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(Int64Array::from((0..25).map(|i| 1000 + i).collect::<Vec<i64>>())),
+                Arc::new(Int64Array::from(
+                    (0..25).map(|i| 1000 + i).collect::<Vec<i64>>(),
+                )),
                 Arc::new(StringArray::from(
                     (0..25).map(|i| format!("p{i}")).collect::<Vec<_>>(),
                 )),
@@ -296,7 +305,7 @@ mod layout {
 
     /// Read ldbc_sample in one format: vertex count from the count file, the
     /// merged vertex table, and the ordered_by_source CSR, checked against the
-    /// unordered_by_source list and against the upstream CSV source file.
+    /// ordered_by_dest CSR of the same edges.
     fn check_ldbc_sample(fmt: &str) {
         let Some(root) = testdata() else {
             eprintln!("GRAPHAR_TESTDATA not set; skipping");
@@ -319,16 +328,14 @@ mod layout {
         assert_eq!(indices.len(), 6626);
         assert_eq!(*offsets.last().unwrap() as usize, indices.len());
 
-        // Same edge multiset as the unordered list.
-        let u = AdjListType::UnorderedBySource;
-        let ur = EdgeReader::open(ei, &base, &u).unwrap();
+        // Same edge multiset as the ordered_by_dest list (CSC of the same graph).
+        let d = AdjListType::OrderedByDest;
+        let dr = EdgeReader::open(ei, &base, &d).unwrap();
+        let (doff, didx) = dr.read_csr(&d).unwrap();
         let mut pairs = Vec::new();
-        for part in ur.iter_vertex_chunks(&u) {
-            let (_, batches) = part.unwrap();
-            for b in &batches {
-                for (s, d) in i64s(b, SRC_INDEX_COL).into_iter().zip(i64s(b, DST_INDEX_COL)) {
-                    pairs.push((s, d));
-                }
+        for v in 0..doff.len() - 1 {
+            for &s in &didx[doff[v] as usize..doff[v + 1] as usize] {
+                pairs.push((s, v as i64));
             }
         }
         pairs.sort_unstable();
@@ -369,7 +376,9 @@ mod layout {
         };
         for fmt in ["parquet", "csv", "orc"] {
             let issues = crate::validate::validate_graph_dir(
-                root.join("ldbc_sample").join(fmt).join("ldbc_sample.graph.yml"),
+                root.join("ldbc_sample")
+                    .join(fmt)
+                    .join("ldbc_sample.graph.yml"),
             );
             let errs: Vec<_> = issues
                 .iter()
@@ -386,9 +395,8 @@ mod layout {
         let Some(root) = testdata() else {
             return;
         };
-        let p = root.join(
-            "ldbc_sample/parquet/edge/person_knows_person/ordered_by_source/offset/chunk0",
-        );
+        let p = root
+            .join("ldbc_sample/parquet/edge/person_knows_person/ordered_by_source/offset/chunk0");
         let b = io::read_chunk(p, &FileType::Parquet).unwrap();
         assert_eq!(b[0].schema().field(0).name(), OFFSET_COL);
         assert_eq!(b[0].column(0).len(), 101);

@@ -114,23 +114,19 @@ impl EdgeInfo {
         vertex_chunk: u64,
         edge_chunk: u64,
     ) -> Result<PathBuf> {
-        let info = self.get_adj_list_info(adj_type).ok_or_else(|| {
+        self.get_adj_list_info(adj_type).ok_or_else(|| {
             GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
         })?;
         Ok(PathBuf::from(&self.prefix)
             .join(adj_type.dir_name())
             .join("adj_list")
             .join(format!("part{vertex_chunk}"))
-            .join(format!(
-                "chunk{}.{}",
-                edge_chunk,
-                info.file_type.extension()
-            )))
+            .join(format!("chunk{edge_chunk}")))
     }
 
     /// Path to the offset chunk for a given vertex chunk (ordered adj lists only).
     pub fn offset_chunk_path(&self, adj_type: &AdjListType, vertex_chunk: u64) -> Result<PathBuf> {
-        let info = self.get_adj_list_info(adj_type).ok_or_else(|| {
+        self.get_adj_list_info(adj_type).ok_or_else(|| {
             GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
         })?;
         if !adj_type.is_ordered() {
@@ -141,11 +137,25 @@ impl EdgeInfo {
         Ok(PathBuf::from(&self.prefix)
             .join(adj_type.dir_name())
             .join("offset")
+            .join(format!("chunk{vertex_chunk}")))
+    }
+
+    /// Path of the adjacency list's `vertex_count` file (vertex count of the
+    /// aligned side).
+    pub fn vertex_count_path(&self, adj_type: &AdjListType) -> PathBuf {
+        PathBuf::from(&self.prefix)
+            .join(adj_type.dir_name())
+            .join(crate::general_params::VERTEX_COUNT_FILE)
+    }
+
+    /// Path of the `edge_count<N>` file for vertex chunk (partition) `vertex_chunk`.
+    pub fn edge_count_path(&self, adj_type: &AdjListType, vertex_chunk: u64) -> PathBuf {
+        PathBuf::from(&self.prefix)
+            .join(adj_type.dir_name())
             .join(format!(
-                "chunk{}.{}",
-                vertex_chunk,
-                info.file_type.extension()
-            )))
+                "{}{vertex_chunk}",
+                crate::general_params::EDGE_COUNT_FILE_PREFIX
+            ))
     }
 
     /// Path to an edge property group chunk file.
@@ -160,11 +170,7 @@ impl EdgeInfo {
             .join(adj_type.dir_name())
             .join(group.dir_name())
             .join(format!("part{vertex_chunk}"))
-            .join(format!(
-                "chunk{}.{}",
-                edge_chunk,
-                group.file_type.extension()
-            ))
+            .join(format!("chunk{edge_chunk}"))
     }
 
     pub fn find_property_group(&self, property_name: &str) -> Option<&PropertyGroup> {
