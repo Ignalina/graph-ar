@@ -1,4 +1,5 @@
 /target
 /bench/rust/target
+/bench/perf/target
 /bench/graphar-rs/target
 /bench/graphar-rs/upstream

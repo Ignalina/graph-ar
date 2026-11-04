@@ -17,7 +17,7 @@ nothing is published from here.
 | Chunk formats | Parquet, CSV, ORC (feature `orc`), JSON, plus Arrow IPC (not in the upstream `FileType` set) |
 | Layout | `chunk<N>` files, `_graphArVertexIndex` / `_graphArSrcIndex` / `_graphArDstIndex` / `_graphArOffset` columns, `vertex_count` and `edge_count<N>` files |
 | Write | row builders (`VerticesBuilder`, `EdgesBuilder`) and table writers (`write_vertex_table`, `write_edge_table`) for all four adjacency list types, offsets for ordered lists |
-| Read | `VertexReader` (per group, merged, by property), `EdgeReader` (adjacency list, offsets, property groups, `read_csr`) |
+| Read | `VertexReader` (per group, merged, by property), `EdgeReader` (adjacency list, offsets, property groups, `read_csr`, `neighbors`) |
 | Storage | local files; `ChunkStore` over `object_store` (S3, GCS, Azure, HTTP) with retry and multipart options |
 | Validation | `validate_graph_dir`: info-file rules and the chunk layout |
 

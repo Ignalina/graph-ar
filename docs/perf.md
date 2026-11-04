@@ -20,9 +20,9 @@ under the License.
 # graphar performance notes
 
 How the hot paths work, what they cost, and what was measured. Every
-number here comes from `benches/graphar_bench.rs` driven by `benches/run.sh`
+number here comes from `bench/perf/src/main.rs` driven by `bench/perf/run.sh`
 (one process per stage, so peak RSS and bytes read are per stage), on
-**oden** (AMD Threadripper PRO 3975WX, 32 cores, 499 GB RAM, Linux 7.0),
+one host (AMD Threadripper PRO 3975WX, 32 cores, 499 GB RAM, Linux 7.0),
 **2026-11-04**, `--release`, Rust 1.97.1 in the `nordisk-cargo-toolchain:ci4`
 container. The host carried a load of 25-45 from other jobs during the
 runs, so parallel figures are conservative; single-thread figures repeated
@@ -36,7 +36,7 @@ GraphAr default chunk sizes (vertex 2¹⁸ = 262 144, edge 2²² = 4 194 304),
 Parquet. "Before" is main `12485bf` (ZSTD default, columnar
 `write_edge_table`), "after" is this branch (`aad4ced`).
 
-Reproduce: `benches/run.sh out.md --vertices 1000000 --edges 10000000 --dir /some/dir`
+Reproduce: `bench/perf/run.sh out.md --vertices 1000000 --edges 10000000 --dir /some/dir`
 (`STAGES="..."` picks stages, `GRAPHAR_BENCH_THREADS=n` caps decode threads).
 
 ## Results
@@ -293,13 +293,13 @@ and the chunk → file mapping is arithmetic. The only sorted searches one
 could write are (a) edge row → owning vertex, a `partition_point` over
 the offsets (66 ns at 262k entries) that no reader path needs, and (b)
 exact lookup of an *external* key in a sorted key column (LDBC ids → row),
-which is an index a graph engine such as knut builds on top of GraphAr,
+which is an index a graph engine builds on top of GraphAr,
 not part of the format.
 
-For (b) the tree is worth it. `STree64` (znippy-zoomies, Ragnar's layout:
+For (b) the tree is worth it. `STree64` (the `znippy-zoomies` crate, his layout:
 64-byte nodes of 8 i64 keys, branchless SIMD compare, O(log₉ n) node
 visits) against `partition_point` and a branchless Eytzinger layout,
-single exact lookups of present keys, 10M random queries, oden:
+single exact lookups of present keys, 10M random queries:
 
 | keys | partition_point | Eytzinger | STree64 | STree64 build |
 |---|---|---|---|---|

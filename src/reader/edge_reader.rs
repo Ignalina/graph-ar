@@ -352,18 +352,15 @@ impl EdgeReader {
     ) -> Result<Vec<RecordBatch>> {
         let mut all = Vec::new();
         let mut edge_chunk = 0u64;
-        loop {
-            let Some(path) = io::resolve_chunk(
-                self.base_dir.join(self.info.property_chunk_path(
-                    adj_type,
-                    group,
-                    vertex_chunk,
-                    edge_chunk,
-                )),
-                &group.file_type,
-            ) else {
-                break;
-            };
+        while let Some(path) = io::resolve_chunk(
+            self.base_dir.join(self.info.property_chunk_path(
+                adj_type,
+                group,
+                vertex_chunk,
+                edge_chunk,
+            )),
+            &group.file_type,
+        ) {
             let mut batches = io::read_chunk_typed(&path, &group.file_type, &group.arrow_schema())?;
             all.append(&mut batches);
             edge_chunk += 1;
