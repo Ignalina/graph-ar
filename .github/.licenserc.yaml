@@ -28,6 +28,7 @@ header:
     - ".github/**"
   excludes:
     - "**/*.md"
+    - bench/README.md
     - NOTICE
     - LICENSE
     - testing/**
