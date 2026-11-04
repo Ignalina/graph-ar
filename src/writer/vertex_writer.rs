@@ -16,7 +16,6 @@
 // under the License.
 
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -39,9 +38,13 @@ use crate::{
 };
 
 /// In-memory vertex with typed property values.
+///
+/// Properties live in a small `Vec` rather than a `HashMap`: a vertex carries
+/// a handful of them, a linear scan over a few names beats hashing, and it is
+/// one allocation per vertex instead of a hash table (see `docs/perf.md`).
 #[derive(Debug, Clone, Default)]
 pub struct Vertex {
-    properties: HashMap<String, PropertyValue>,
+    properties: Vec<(String, PropertyValue)>,
 }
 
 /// Dynamically typed property value.
@@ -64,13 +67,44 @@ impl Vertex {
         Self::default()
     }
 
+    /// Set a property; setting an existing name replaces its value.
     pub fn add_property(mut self, name: impl Into<String>, value: PropertyValue) -> Self {
-        self.properties.insert(name.into(), value);
+        let name = name.into();
+        if let Some(slot) = self.properties.iter_mut().find(|(n, _)| *n == name) {
+            slot.1 = value;
+        } else {
+            self.properties.push((name, value));
+        }
         self
     }
 
     pub fn get(&self, name: &str) -> Option<&PropertyValue> {
-        self.properties.get(name)
+        self.properties
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v)
+    }
+}
+
+/// Anything that exposes named [`PropertyValue`]s — the row type the column
+/// builders read from. Implemented for [`Vertex`] and
+/// [`crate::writer::Edge`], so the edge writer builds property chunks straight
+/// from its edges instead of cloning each one into a pseudo-vertex first.
+pub trait HasProperties {
+    fn get_property(&self, name: &str) -> Option<&PropertyValue>;
+}
+
+impl HasProperties for Vertex {
+    #[inline]
+    fn get_property(&self, name: &str) -> Option<&PropertyValue> {
+        self.get(name)
+    }
+}
+
+impl<T: HasProperties> HasProperties for &T {
+    #[inline]
+    fn get_property(&self, name: &str) -> Option<&PropertyValue> {
+        (**self).get_property(name)
     }
 }
 
@@ -200,29 +234,29 @@ pub(crate) fn project(table: &RecordBatch, schema: &Schema) -> Result<Vec<ArrayR
 }
 
 /// Exposed for edge writer reuse.
-pub fn build_record_batch_for_edges(
-    vertices: &[Vertex],
+pub fn build_record_batch_for_edges<T: HasProperties>(
+    rows: &[T],
     group: &PropertyGroup,
 ) -> Result<RecordBatch> {
-    build_record_batch(vertices, group)
+    build_record_batch(rows, group)
 }
 
-fn build_record_batch(vertices: &[Vertex], group: &PropertyGroup) -> Result<RecordBatch> {
+fn build_record_batch<T: HasProperties>(items: &[T], group: &PropertyGroup) -> Result<RecordBatch> {
     let schema = group.arrow_schema();
-    let rows = vertices.len();
+    let rows = items.len();
     let mut columns: Vec<ArrayRef> = Vec::with_capacity(group.properties.len());
 
     for prop in &group.properties {
         // Resolve the property key once per column; each row only does the
-        // HashMap lookup, appending straight into the typed builder (no
+        // name lookup, appending straight into the typed builder (no
         // intermediate `Vec<Option<T>>`). A non-matching variant or a missing
         // key both append a null, exactly as the old `Array::from` path did.
         let name = prop.name.as_str();
         let col: ArrayRef = match &prop.data_type {
             DataType::Bool => {
                 let mut b = BooleanBuilder::with_capacity(rows);
-                for v in vertices {
-                    match v.get(name) {
+                for v in items {
+                    match v.get_property(name) {
                         Some(PropertyValue::Bool(x)) => b.append_value(*x),
                         _ => b.append_null(),
                     }
@@ -231,8 +265,8 @@ fn build_record_batch(vertices: &[Vertex], group: &PropertyGroup) -> Result<Reco
             }
             DataType::Int32 => {
                 let mut b = Int32Builder::with_capacity(rows);
-                for v in vertices {
-                    match v.get(name) {
+                for v in items {
+                    match v.get_property(name) {
                         Some(PropertyValue::Int32(x)) => b.append_value(*x),
                         _ => b.append_null(),
                     }
@@ -241,8 +275,8 @@ fn build_record_batch(vertices: &[Vertex], group: &PropertyGroup) -> Result<Reco
             }
             DataType::Int64 => {
                 let mut b = Int64Builder::with_capacity(rows);
-                for v in vertices {
-                    match v.get(name) {
+                for v in items {
+                    match v.get_property(name) {
                         Some(PropertyValue::Int64(x)) => b.append_value(*x),
                         _ => b.append_null(),
                     }
@@ -251,8 +285,8 @@ fn build_record_batch(vertices: &[Vertex], group: &PropertyGroup) -> Result<Reco
             }
             DataType::Float => {
                 let mut b = Float32Builder::with_capacity(rows);
-                for v in vertices {
-                    match v.get(name) {
+                for v in items {
+                    match v.get_property(name) {
                         Some(PropertyValue::Float(x)) => b.append_value(*x),
                         _ => b.append_null(),
                     }
@@ -261,8 +295,8 @@ fn build_record_batch(vertices: &[Vertex], group: &PropertyGroup) -> Result<Reco
             }
             DataType::Double => {
                 let mut b = Float64Builder::with_capacity(rows);
-                for v in vertices {
-                    match v.get(name) {
+                for v in items {
+                    match v.get_property(name) {
                         Some(PropertyValue::Double(x)) => b.append_value(*x),
                         _ => b.append_null(),
                     }
@@ -271,8 +305,8 @@ fn build_record_batch(vertices: &[Vertex], group: &PropertyGroup) -> Result<Reco
             }
             DataType::String | DataType::Date | DataType::Timestamp | DataType::Time => {
                 let mut b = StringBuilder::with_capacity(rows, 0);
-                for v in vertices {
-                    match v.get(name) {
+                for v in items {
+                    match v.get_property(name) {
                         Some(PropertyValue::String(s)) => b.append_value(s.as_str()),
                         _ => b.append_null(),
                     }
@@ -285,8 +319,8 @@ fn build_record_batch(vertices: &[Vertex], group: &PropertyGroup) -> Result<Reco
                 // one (possibly empty) list slot; a missing key or a non-list
                 // variant becomes a null list, mirroring the scalar arms above.
                 let mut b = ListBuilder::new(StringBuilder::with_capacity(rows, 0));
-                for v in vertices {
-                    match v.get(name) {
+                for v in items {
+                    match v.get_property(name) {
                         Some(PropertyValue::List(items)) => {
                             for item in items {
                                 b.values().append_value(item.as_str());

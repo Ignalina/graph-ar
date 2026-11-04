@@ -30,6 +30,8 @@ pub struct VertexReader {
     info: VertexInfo,
     base_dir: PathBuf,
     vertex_count: u64,
+    /// Decode threads for multi-chunk reads; `None` = the default cap.
+    threads: Option<usize>,
 }
 
 impl VertexReader {
@@ -38,7 +40,14 @@ impl VertexReader {
             info,
             base_dir: base_dir.as_ref().to_path_buf(),
             vertex_count,
+            threads: None,
         }
+    }
+
+    /// Cap the decode threads used by the multi-chunk reads (`1` = serial).
+    pub fn with_threads(mut self, threads: usize) -> Self {
+        self.threads = Some(threads.max(1));
+        self
     }
 
     /// Open a vertex type, taking the vertex count from its `vertex_count` file.
@@ -61,13 +70,13 @@ impl VertexReader {
     }
 
     /// Read all chunks for a property group, returning concatenated batches.
+    /// Chunks decode in parallel (see [`with_threads`](Self::with_threads)).
     pub fn read_property_group(&self, group: &PropertyGroup) -> Result<Vec<RecordBatch>> {
-        let mut all = Vec::new();
-        for chunk_idx in 0..self.chunk_count() {
-            let mut batches = self.read_property_group_chunk(group, chunk_idx)?;
-            all.append(&mut batches);
-        }
-        Ok(all)
+        let n = self.chunk_count() as usize;
+        let per_chunk = super::par_map(n, self.threads, |i| {
+            self.read_property_group_chunk(group, i as u64)
+        })?;
+        Ok(per_chunk.into_iter().flatten().collect())
     }
 
     /// Read a single chunk for a property group.
@@ -93,12 +102,17 @@ impl VertexReader {
         self.read_merged_groups(&groups)
     }
 
-    /// Read the given property groups and merge them into one batch.
+    /// Read the given property groups and merge them into one batch. Every
+    /// (group, chunk) file decodes in parallel.
     pub fn read_merged_groups(&self, groups: &[PropertyGroup]) -> Result<RecordBatch> {
-        let per_group = groups
-            .iter()
-            .map(|g| self.read_property_group(g))
-            .collect::<Result<Vec<_>>>()?;
+        let chunks = (self.chunk_count() as usize).max(1);
+        let flat = super::par_map(groups.len() * chunks, self.threads, |j| {
+            self.read_property_group_chunk(&groups[j / chunks], (j % chunks) as u64)
+        })?;
+        let per_group: Vec<Vec<RecordBatch>> = flat
+            .chunks(chunks)
+            .map(|g| g.iter().flatten().cloned().collect())
+            .collect();
         crate::merge::merge_property_groups(&per_group)
     }
 

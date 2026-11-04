@@ -53,3 +53,11 @@ url = "2"
 tempfile = "3"
 testcontainers = "0.27"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# bench only (benches/graphar_bench.rs, docs/perf.md): Ragnar Groot Koerkamp's
+# static search tree (STree64) and mmap, for the lookup / IO experiments.
+znippy-zoomies = { version = "0.1.26", default-features = false }
+memmap2 = "0.9"
+
+[[bench]]
+name = "graphar_bench"
+harness = false
