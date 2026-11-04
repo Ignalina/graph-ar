@@ -14,6 +14,7 @@ nothing is published from here.
 | area | support |
 |---|---|
 | Info files | `GraphInfo`, `VertexInfo`, `EdgeInfo`, `PropertyGroup`, `Property`, `AdjListInfo`: load and save `*.graph.yml`, `*.vertex.yml`, `*.edge.yml` |
+| Value types | `bool`, `int32`, `int64`, `float`, `double`, `string`, `date`, `timestamp`, `list<T>` of each scalar |
 | Chunk formats | Parquet, CSV, ORC (feature `orc`), JSON, plus Arrow IPC (not in the upstream `FileType` set) |
 | Layout | `chunk<N>` files, `_graphArVertexIndex` / `_graphArSrcIndex` / `_graphArDstIndex` / `_graphArOffset` columns, `vertex_count` and `edge_count<N>` files |
 | Write | row builders (`VerticesBuilder`, `EdgesBuilder`) and table writers (`write_vertex_table`, `write_edge_table`) for all four adjacency list types, offsets for ordered lists |
@@ -21,7 +22,7 @@ nothing is published from here.
 | Storage | local files; `ChunkStore` over `object_store` (S3, GCS, Azure, HTTP) with retry and multipart options |
 | Validation | `validate_graph_dir`: info-file rules and the chunk layout |
 
-Known gaps are listed in [docs/design.md](docs/design.md#gaps).
+Known gaps are listed in [docs/design.md](docs/design.md#gaps). Benchmarks against GraphAr C++ and interoperability results are in [bench/BENCH.md](bench/BENCH.md).
 
 ## Build and test
 
