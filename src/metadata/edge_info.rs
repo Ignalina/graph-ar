@@ -1,3 +1,20 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -89,15 +106,13 @@ impl EdgeInfo {
         self
     }
 
-    /// Number of vertex-aligned partitions for the given vertex count.
+    /// Vertex chunk size of the side `adj_type` is aligned by.
     pub fn vertex_chunk_count(&self, adj_type: &AdjListType) -> u64 {
-        let vchunk_size = if adj_type.aligned_by_src() {
+        if adj_type.aligned_by_src() {
             self.src_chunk_size
         } else {
             self.dst_chunk_size
-        };
-        // Caller must supply vertex count; return the chunk size for callers to derive count.
-        vchunk_size
+        }
     }
 
     pub fn get_adj_list_info(&self, adj_type: &AdjListType) -> Option<&AdjListInfo> {

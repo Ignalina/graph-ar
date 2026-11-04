@@ -1,3 +1,20 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 //! ChunkStore against live S3-compatible object stores: SeaweedFS and RustFS,
 //! both run as Podman containers via testcontainers.
 //!
@@ -89,7 +106,7 @@ async fn chunk_store_against_seaweedfs() {
         .exec(ExecCommand::new([
             "sh",
             "-c",
-            "echo 's3.bucket.create -name knut' | weed shell",
+            "echo 's3.bucket.create -name graphar' | weed shell",
         ]))
         .await
         .expect("weed shell bucket create");
@@ -99,7 +116,7 @@ async fn chunk_store_against_seaweedfs() {
     // SeaweedFS without an identity config accepts any key pair.
     let store = ChunkStore::s3_compatible(
         &format!("http://127.0.0.1:{port}"),
-        "knut",
+        "graphar",
         "any",
         "any",
         "graphs/itest",
@@ -135,7 +152,7 @@ async fn chunk_store_against_rustfs() {
             "rustfsadmin:rustfsadmin",
             "--aws-sigv4",
             "aws:amz:us-east-1:s3",
-            "http://127.0.0.1:9000/knut",
+            "http://127.0.0.1:9000/graphar",
         ]))
         .await
         .expect("create bucket via signed PUT");
@@ -144,7 +161,7 @@ async fn chunk_store_against_rustfs() {
 
     let store = ChunkStore::s3_compatible(
         &format!("http://127.0.0.1:{port}"),
-        "knut",
+        "graphar",
         "rustfsadmin",
         "rustfsadmin",
         "graphs/itest",

@@ -1,54 +1,55 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 [package]
 name = "graphar"
-description = "Apache GraphAr format reader/writer"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
-# Development notes, agent instructions and machine-local tooling stay in the
-# repository; they are not part of the published crate.
-exclude = [
-    ".nornir/",
-]
+description = "Native Rust reader and writer for the Apache GraphAr (gar/v1) file format"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.91"
+license = "Apache-2.0"
+repository = "https://git.gunnar.rs/nordisk/graph-ar"
+readme = "README.md"
+keywords = ["graph", "graphar", "arrow", "parquet"]
+categories = ["data-structures", "encoding"]
+# The crate name and publication are for the Apache GraphAr project to decide.
+publish = false
 
 [features]
 default = []
-# `orc` — the Apache ORC read/write arm. See the orc-rust dep for why it is off.
+# Apache ORC chunks through orc-rust (pure Rust, on the same arrow major).
 orc = ["dep:orc-rust"]
-# `testmatrix` — emit each functional surface's health (the gar/v1 ChunkStore
-# write path + the graph-info validator) into the nornir test-matrix via
-# `functional_status`. OFF BY DEFAULT: a compiled-out `#[inline]` no-op with no
-# nornir dep. Turn on with `--features testmatrix` (pulls nornir-testmatrix's
-# own `testmatrix` mode).
-testmatrix = ["dep:nornir-testmatrix", "nornir-testmatrix/testmatrix"]
 
 [dependencies]
-# Introspection-marker emitter — only compiled with `testmatrix`. Path (the
-# workspace `[patch.crates-io]` also resolves it) to the local nornir-testmatrix
-# 0.2, which carries the `functional_status` emitter + the `testmatrix` gate.
-nornir-testmatrix = { version = "0.2", default-features = false, optional = true }
-serde = { workspace = true }
-serde_yaml = { workspace = true }
-serde_json = { workspace = true }
-arrow = { workspace = true }
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
-arrow-csv = { workspace = true }
-parquet = { workspace = true }
-thiserror = { workspace = true }
-anyhow = { workspace = true }
-chrono = { workspace = true }
-# ORC is behind the `orc` feature, OFF by default. orc-rust 0.9.0 is the first
-# release on arrow ^59, so turning `orc` on adds no second arrow major (the old
-# vendor/orc-rust-arrow59 fork is retired).
+arrow = { version = "59", features = ["prettyprint"] }
+arrow-array = "59"
+arrow-csv = "59"
+arrow-schema = "59"
+bytes = "1"
+object_store = { version = "0.14", features = ["aws", "gcp", "azure", "http"] }
 orc-rust = { version = "0.9", optional = true }
-object_store = { workspace = true }
-bytes = { workspace = true }
-url = { workspace = true }
-tokio = { workspace = true }
+parquet = { version = "59", features = ["arrow"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+url = "2"
 
 [dev-dependencies]
-testcontainers = "0.27"
-tokio = { workspace = true }
 tempfile = "3"
+testcontainers = "0.27"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

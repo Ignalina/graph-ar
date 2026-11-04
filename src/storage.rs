@@ -1,3 +1,20 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 //! Chunk IO over [`object_store`] — S3, GCS, Azure, local filesystem, and any
 //! S3-compatible endpoint (SeaweedFS, RustFS, MinIO, …).
 //!
@@ -122,7 +139,7 @@ pub const DEFAULT_MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
 ///
 /// `object_store` can stream a large object to a remote backend (S3, GCS,
 /// Azure, S3-compatible stores) as a sequence of fixed-size parts via
-/// [`ObjectStore::put_multipart`], which the store assembles into one object on
+/// `ObjectStore::put_multipart`, which the store assembles into one object on
 /// `complete()`. This sidesteps holding/uploading one huge request body and is
 /// the standard path for big objects.
 ///
@@ -469,14 +486,8 @@ impl ChunkStore {
         batches: &[RecordBatch],
         file_type: &FileType,
     ) -> Result<()> {
-        let result = async {
-            let payload = write_chunk_bytes(batches, file_type)?;
-            self.put_object(rel, payload).await
-        }
-        .await;
-        // Emit the gar/v1 chunk-write surface's health into the nornir matrix.
-        crate::functional_status("graphar/chunk_store", "write_chunk", result.is_ok(), rel);
-        result
+        let payload = write_chunk_bytes(batches, file_type)?;
+        self.put_object(rel, payload).await
     }
 
     /// Raw byte fetch (info YAML files, offsets, …).

@@ -1,3 +1,20 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 #[cfg(test)]
 mod metadata_tests {
     use crate::{
@@ -923,37 +940,22 @@ mod validate_tests {
         );
     }
 
-    /// Opt-in: validate the official Apache GraphAr `gar/v1` testdata corpus.
+    /// Validate every `gar/v1` graph of the upstream `testing` data
+    /// (<https://github.com/apache/incubator-graphar-testing>, the `testing`
+    /// submodule, or `GAR_TEST_DATA`). Never fetches over the network.
     ///
-    /// This test never fetches over the network. Point it at a local checkout
-    /// of <https://github.com/apache/incubator-graphar-testing>:
-    ///
-    /// ```text
-    /// git clone --depth 1 https://github.com/apache/incubator-graphar-testing /tmp/graphar-testdata
-    /// GRAPHAR_TESTDATA=/tmp/graphar-testdata cargo test -p graphar --  --ignored corpus
-    /// ```
-    ///
-    /// The corpus writes *extensionless* chunk files (`chunk0`, not
-    /// `chunk0.parquet`), so it is validated with [`ValidateOptions::corpus`].
-    ///
-    /// Two parts of the corpus are intentionally skipped, not failed:
+    /// Two parts are skipped, not failed:
     /// - the `java/` subtree, whose info files use a different (non-`gar/v1`)
-    ///   field schema (`label` instead of `type`) and don't load into our model;
-    /// - any graph whose info file uses a parameterized list type (e.g.
-    ///   `list<float>`) that knut's `DataType` enum doesn't yet model.
-    ///
-    /// A graph that loads is held to the structural rules and must validate with
-    /// no errors. This was checked against a real checkout during development.
+    ///   field schema (`label` instead of `type`);
+    /// - graphs whose info files use a parameterized list type (`list<float>`),
+    ///   which `DataType` does not model yet.
     #[test]
-    #[ignore = "requires GRAPHAR_TESTDATA pointing at a local corpus checkout"]
     fn corpus_validates() {
-        let root = match std::env::var("GRAPHAR_TESTDATA") {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!("GRAPHAR_TESTDATA not set; skipping corpus validation");
-                return;
-            }
+        let Some(root) = crate::tests::upstream_testing_dir() else {
+            eprintln!("upstream testing data not found; skipping corpus validation");
+            return;
         };
+        let root = root.to_string_lossy().into_owned();
         let opts = ValidateOptions::corpus();
 
         // Walk for every *.graph.yml under the corpus and validate it.
@@ -1208,4 +1210,15 @@ mod empty_slice_contract_tests {
             }
         }
     }
+}
+
+/// The upstream `testing` data: `GAR_TEST_DATA` if set, else the `testing`
+/// submodule of this repository if it is checked out.
+#[cfg(test)]
+pub(crate) fn upstream_testing_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("GAR_TEST_DATA") {
+        return Some(dir.into());
+    }
+    let sub = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testing");
+    sub.join("ldbc_sample").is_dir().then_some(sub)
 }

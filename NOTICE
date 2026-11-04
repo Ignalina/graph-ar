@@ -1,0 +1,4 @@
+graph-ar: a native Rust implementation of the Apache GraphAr file format
+Copyright 2026 Ignalina ApS
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).

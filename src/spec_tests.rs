@@ -1,8 +1,26 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 //! On-disk layout tests against the Apache GraphAr `gar/v1` layout as the
 //! upstream C++, Java and Spark libraries write it: extensionless `chunk<N>`
 //! files, the reserved `_graphAr*` column names, and the `vertex_count` /
 //! `edge_count<N>` files. The `upstream_*` tests read the upstream `testing`
-//! data and run only when `GRAPHAR_TESTDATA` points at a checkout of it.
+//! data from `GAR_TEST_DATA`, or from the `testing` submodule, and skip when
+//! neither is present.
 
 #[cfg(test)]
 mod layout {
@@ -297,10 +315,10 @@ mod layout {
         }
     }
 
-    // ---- upstream `testing` data (GRAPHAR_TESTDATA=<incubator-graphar>/testing) ----
+    // ---- upstream `testing` data ----
 
     fn testdata() -> Option<std::path::PathBuf> {
-        std::env::var_os("GRAPHAR_TESTDATA").map(Into::into)
+        crate::tests::upstream_testing_dir()
     }
 
     /// Read ldbc_sample in one format: vertex count from the count file, the
@@ -308,7 +326,7 @@ mod layout {
     /// ordered_by_dest CSR of the same edges.
     fn check_ldbc_sample(fmt: &str) {
         let Some(root) = testdata() else {
-            eprintln!("GRAPHAR_TESTDATA not set; skipping");
+            eprintln!("upstream testing data not found; skipping");
             return;
         };
         let base = root.join("ldbc_sample").join(fmt);
@@ -350,26 +368,22 @@ mod layout {
     }
 
     #[test]
-    #[ignore = "needs GRAPHAR_TESTDATA"]
     fn upstream_ldbc_sample_parquet() {
         check_ldbc_sample("parquet");
     }
 
     #[test]
-    #[ignore = "needs GRAPHAR_TESTDATA"]
     fn upstream_ldbc_sample_csv() {
         check_ldbc_sample("csv");
     }
 
     #[cfg(feature = "orc")]
     #[test]
-    #[ignore = "needs GRAPHAR_TESTDATA"]
     fn upstream_ldbc_sample_orc() {
         check_ldbc_sample("orc");
     }
 
     #[test]
-    #[ignore = "needs GRAPHAR_TESTDATA"]
     fn upstream_ldbc_sample_validates_strictly() {
         let Some(root) = testdata() else {
             return;
@@ -390,7 +404,6 @@ mod layout {
     }
 
     #[test]
-    #[ignore = "needs GRAPHAR_TESTDATA"]
     fn upstream_offsets_column_is_named() {
         let Some(root) = testdata() else {
             return;
