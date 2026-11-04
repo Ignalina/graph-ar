@@ -29,7 +29,7 @@ pub struct GraphInfo {
     /// Root directory for all data files (relative or absolute). Optional in
     /// the `gar/v1` spec — the upstream testdata `*.graph.yml` files omit it —
     /// so it defaults to empty (data resolved relative to the info file).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prefix: String,
     #[serde(default)]
     pub vertices: Vec<String>,
