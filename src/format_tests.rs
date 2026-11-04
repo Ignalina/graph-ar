@@ -218,3 +218,77 @@ mod payload_format {
         );
     }
 }
+
+#[cfg(test)]
+mod read_path {
+    use std::sync::Arc;
+
+    use arrow_array::{Int64Array, RecordBatch};
+    use arrow_schema::{DataType as ArrowDataType, Field, Schema};
+    use tempfile::tempdir;
+
+    use crate::{
+        AdjListInfo, AdjListType, DST_INDEX_COL, EdgeInfo, EdgeReader, FileType, SRC_INDEX_COL,
+        io, write_edge_table,
+    };
+
+    fn edges(m: i64) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(SRC_INDEX_COL, ArrowDataType::Int64, false),
+            Field::new(DST_INDEX_COL, ArrowDataType::Int64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values((0..m).map(|e| e % 100))),
+                Arc::new(Int64Array::from_iter_values((0..m).map(|e| (e * 7) % 100))),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_parquet_chunk_reads_as_one_batch_not_one_per_1024_rows() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("chunk0");
+        io::write_chunk(&path, &[edges(50_000)], &FileType::Parquet).unwrap();
+        let batches = io::read_chunk(&path, &FileType::Parquet).unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 50_000);
+    }
+
+    #[test]
+    fn read_chunk_columns_decodes_only_the_named_columns() {
+        let dir = tempdir().unwrap();
+        for ft in [FileType::Parquet, FileType::Csv] {
+            let path = dir.path().join(format!("chunk.{}", ft.extension()));
+            io::write_chunk(&path, &[edges(10)], &ft).unwrap();
+            let b = io::read_chunk_columns(&path, &ft, &[DST_INDEX_COL]).unwrap();
+            assert_eq!(b[0].num_columns(), 1);
+            assert_eq!(b[0].schema().field(0).name(), DST_INDEX_COL);
+        }
+    }
+
+    #[test]
+    fn read_csr_is_unchanged_by_the_projection() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let ei = EdgeInfo::new("v", "e", "v", 64, 32, 32, true).with_adj_list(AdjListInfo {
+            ordered: true,
+            aligned_by: "src".into(),
+            file_type: FileType::Parquet,
+            prefix: None,
+        });
+        let t = AdjListType::OrderedBySource;
+        write_edge_table(&ei, base, &t, &edges(1000), 100).unwrap();
+        let (offsets, indices) = EdgeReader::open(ei, base, &t).unwrap().read_csr(&t).unwrap();
+        assert_eq!(offsets.len(), 101);
+        assert_eq!(indices.len(), 1000);
+        // Row v holds the edges e with e % 100 == v; dst is 7v mod 100.
+        for v in 0..100usize {
+            let row = &indices[offsets[v] as usize..offsets[v + 1] as usize];
+            assert_eq!(row.len(), 10);
+            assert!(row.iter().all(|&d| d == (v as i64 * 7) % 100), "row {v}");
+        }
+    }
+}
