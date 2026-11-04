@@ -25,6 +25,7 @@
 
 mod spec_tests;
 mod tests;
+mod type_tests;
 
 pub mod error;
 pub mod general_params;

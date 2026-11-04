@@ -502,7 +502,10 @@ mod io_tests {
         let vi = VertexInfo::new("person", 10).with_property_group(PropertyGroup::new(
             vec![
                 Property::new("id", crate::types::DataType::Int64).primary(),
-                Property::new("tags", crate::types::DataType::List),
+                Property::new(
+                    "tags",
+                    crate::types::DataType::List(Box::new(crate::types::DataType::String)),
+                ),
             ],
             FileType::Parquet,
         ));
@@ -514,7 +517,10 @@ mod io_tests {
                 .add_property("id", PropertyValue::Int64(0))
                 .add_property(
                     "tags",
-                    PropertyValue::List(vec!["alpha".to_string(), "beta".to_string()]),
+                    PropertyValue::List(vec![
+                        PropertyValue::String("alpha".to_string()),
+                        PropertyValue::String("beta".to_string()),
+                    ]),
                 ),
         );
         builder.add_vertex(
