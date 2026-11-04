@@ -204,6 +204,7 @@ mod format_matrix_tests {
         round_trip(FileType::Json);
     }
 
+    #[cfg(feature = "orc")]
     #[test]
     fn round_trip_orc() {
         round_trip(FileType::Orc);
@@ -221,6 +222,7 @@ mod format_matrix_tests {
             FileType::Parquet,
             FileType::Csv,
             FileType::Json,
+            #[cfg(feature = "orc")]
             FileType::Orc,
             FileType::ArrowIpc,
         ] {
@@ -267,6 +269,7 @@ mod storage_tests {
             FileType::Parquet,
             FileType::Csv,
             FileType::Json,
+            #[cfg(feature = "orc")]
             FileType::Orc,
             FileType::ArrowIpc,
         ] {
@@ -1161,10 +1164,11 @@ mod empty_slice_contract_tests {
 
     use crate::{storage::write_chunk_bytes, types::FileType};
 
-    const ALL: [FileType; 5] = [
+    const ALL: &[FileType] = &[
         FileType::Parquet,
         FileType::Csv,
         FileType::Json,
+        #[cfg(feature = "orc")]
         FileType::Orc,
         FileType::ArrowIpc,
     ];
@@ -1177,7 +1181,7 @@ mod empty_slice_contract_tests {
     #[test]
     fn write_chunk_bytes_empty_slice_yields_no_bytes() {
         for ft in ALL {
-            let bytes = write_chunk_bytes(&[], &ft).unwrap();
+            let bytes = write_chunk_bytes(&[], ft).unwrap();
             assert!(bytes.is_empty(), "{ft:?}: &[] must encode to zero bytes");
         }
     }
@@ -1196,7 +1200,7 @@ mod empty_slice_contract_tests {
         let empty_batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(Vec::<i64>::new()))])
                 .unwrap();
-        for ft in ALL {
+        for ft in ALL.iter().cloned() {
             let bytes = write_chunk_bytes(std::slice::from_ref(&empty_batch), &ft).unwrap();
             let nonempty = bytes.is_empty();
             match ft {

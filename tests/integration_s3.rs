@@ -69,6 +69,7 @@ async fn round_trip_all_formats(store: &ChunkStore) {
         FileType::Parquet,
         FileType::Csv,
         FileType::Json,
+        #[cfg(feature = "orc")]
         FileType::Orc,
         FileType::ArrowIpc,
     ] {

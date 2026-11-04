@@ -49,6 +49,7 @@ fn chunk_roundtrip_all_filetypes_preserve_rows_and_columns() {
         FileType::ArrowIpc,
         FileType::Csv,
         FileType::Json,
+        #[cfg(feature = "orc")]
         FileType::Orc,
     ] {
         let label = format!("{ft:?}");

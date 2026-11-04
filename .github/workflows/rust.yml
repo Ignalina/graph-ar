@@ -71,6 +71,7 @@ jobs:
         run: cargo deny check
       - name: Test
         run: |
+          cargo nextest run
           cargo nextest run --all-features
           cargo test --all-features --doc
       - name: Build docs
