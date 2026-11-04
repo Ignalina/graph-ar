@@ -155,6 +155,24 @@ impl EdgeReader {
         Ok(per_file.into_iter().flatten().collect())
     }
 
+    /// One column of a vertex chunk's adjacency list; a CSR needs only the
+    /// far endpoint, so the near one is never decoded.
+    fn read_adj_column(
+        &self,
+        adj_type: &AdjListType,
+        vertex_chunk: u64,
+        column: &str,
+    ) -> Result<Vec<RecordBatch>> {
+        let info = self.info.get_adj_list_info(adj_type).ok_or_else(|| {
+            GraphArError::AdjListTypeNotConfigured(adj_type.dir_name().to_string())
+        })?;
+        let files = self.adj_chunk_files(adj_type, vertex_chunk)?;
+        let per_file = super::par_map(files.len(), self.threads, |i| {
+            io::read_chunk_columns(&files[i], &info.file_type, &[column])
+        })?;
+        Ok(per_file.into_iter().flatten().collect())
+    }
+
     /// Every vertex chunk's adjacency list, `(vertex_chunk, batches)` in
     /// order, all chunk files decoding in parallel. The parallel form of
     /// [`iter_vertex_chunks`](Self::iter_vertex_chunks).
@@ -391,36 +409,40 @@ impl EdgeReader {
         for vc in 0..n.div_ceil(chunk) {
             let v_start = vc * chunk;
             let len = chunk.min(n - v_start) as usize;
-            let batches = self.read_adj_list(adj_type, vc)?;
             let base = *offsets.last().unwrap_or(&0);
             if adj_type.is_ordered() {
+                let batches = self.read_adj_column(adj_type, vc, other_col)?;
+                indices.reserve(batches.iter().map(|b| b.num_rows()).sum());
                 for b in &batches {
                     indices.extend_from_slice(i64_col(b, other_col)?.values());
                 }
-                let local: Vec<i64> = match self.read_offset(adj_type, vc) {
+                let columns = match self.read_offset(adj_type, vc) {
                     Ok(off) => off
                         .iter()
-                        .map(|b| i64_col(b, OFFSET_COL).map(|a| a.values().to_vec()))
-                        .collect::<Result<Vec<_>>>()?
-                        .concat(),
-                    Err(GraphArError::ChunkOutOfRange(..)) => vec![0; len + 1],
+                        .map(|b| i64_col(b, OFFSET_COL))
+                        .collect::<Result<Vec<_>>>()?,
+                    Err(GraphArError::ChunkOutOfRange(..)) => {
+                        vec![Int64Array::from(vec![0; len + 1])]
+                    }
                     Err(e) => return Err(e),
                 };
                 // The C++ table writer pads the last chunk's offsets to
                 // chunk_size + 1 rows; the padding repeats the final offset.
-                let mut local = local;
-                if local.len() > len + 1 && local[len + 1..].iter().all(|&o| o == local[len]) {
-                    local.truncate(len + 1);
-                }
-                if local.len() != len + 1 {
+                let rows = columns.iter().map(|c| c.len()).sum::<usize>();
+                let mut local = columns.iter().flat_map(|c| c.values().iter().copied());
+                let mut last = 0;
+                offsets.extend(local.by_ref().take(len + 1).skip(1).map(|o| {
+                    last = o;
+                    base + o
+                }));
+                if rows < len + 1 || local.any(|o| o != last) {
                     return Err(GraphArError::Other(format!(
-                        "offset chunk {vc}: expected {} rows, found {}",
+                        "offset chunk {vc}: expected {} rows, found {rows}",
                         len + 1,
-                        local.len()
                     )));
                 }
-                offsets.extend(local[1..].iter().map(|o| base + o));
             } else {
+                let batches = self.read_adj_list(adj_type, vc)?;
                 let mut counts = vec![0i64; len];
                 let mut pairs: Vec<(usize, i64)> = Vec::new();
                 for b in &batches {

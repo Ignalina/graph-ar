@@ -36,15 +36,43 @@ use parquet::{
 
 use crate::error::{GraphArError, Result};
 
+/// Rows per batch of a whole-chunk read, at most. The reader's default is 1024,
+/// which turns a chunk of `r` rows into `r / 1024` batches of small buffers per
+/// column; one batch per chunk is `c` buffers. The cap keeps a string column
+/// inside the 2 GiB of its 32-bit offsets at any plausible row width.
+const MAX_BATCH_ROWS: usize = 1 << 20;
+
+fn whole_chunk(builder: ParquetRecordBatchReaderBuilder<File>) -> Result<Vec<RecordBatch>> {
+    let rows = builder.metadata().file_metadata().num_rows().max(1) as usize;
+    let reader = builder.with_batch_size(rows.min(MAX_BATCH_ROWS)).build()?;
+    reader.map(|b| Ok(b?)).collect()
+}
+
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordBatch>> {
-    let file = File::open(path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    let reader = builder.build()?;
-    let mut batches = Vec::new();
-    for batch in reader {
-        batches.push(batch?);
-    }
-    Ok(batches)
+    whole_chunk(ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?)
+}
+
+/// A whole chunk, decoding only the named `columns`.
+pub fn read_columns(path: impl AsRef<Path>, columns: &[&str]) -> Result<Vec<RecordBatch>> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
+    let mask = projection(&builder, columns)?;
+    whole_chunk(builder.with_projection(mask))
+}
+
+fn projection(
+    builder: &ParquetRecordBatchReaderBuilder<File>,
+    columns: &[&str],
+) -> Result<ProjectionMask> {
+    let schema = builder.schema();
+    let idx = columns
+        .iter()
+        .map(|c| {
+            schema
+                .index_of(c)
+                .map_err(|_| GraphArError::PropertyNotFound((*c).to_string()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ProjectionMask::roots(builder.parquet_schema(), idx))
 }
 
 /// Read rows `[offset, offset + limit)` of `path`, and only the named
@@ -79,16 +107,7 @@ fn read_rows_with(
 ) -> Result<Vec<RecordBatch>> {
     let mut builder = ParquetRecordBatchReaderBuilder::new_with_metadata(file, meta);
     if let Some(cols) = columns {
-        let schema = builder.schema().clone();
-        let idx = cols
-            .iter()
-            .map(|c| {
-                schema
-                    .index_of(c)
-                    .map_err(|_| GraphArError::PropertyNotFound((*c).to_string()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let mask = ProjectionMask::roots(builder.parquet_schema(), idx);
+        let mask = projection(&builder, cols)?;
         builder = builder.with_projection(mask);
     }
     let reader = builder.with_offset(offset).with_limit(limit).build()?;

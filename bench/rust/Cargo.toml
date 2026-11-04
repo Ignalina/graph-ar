@@ -28,6 +28,8 @@ publish = false
 default = []
 # ORC chunks.
 orc = ["graphar/orc"]
+# Count allocations: every read command adds `allocs` and `alloc_bytes`.
+count-alloc = []
 
 [dependencies]
 arrow = "59"

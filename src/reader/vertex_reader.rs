@@ -116,6 +116,23 @@ impl VertexReader {
         crate::merge::merge_property_groups(&per_group)
     }
 
+    /// Only the named property, chunk by chunk: the other columns of its group
+    /// are not decoded.
+    pub fn read_property(&self, property_name: &str) -> Result<Vec<RecordBatch>> {
+        let group = self
+            .info
+            .find_property_group(property_name)
+            .ok_or_else(|| GraphArError::PropertyNotFound(property_name.to_string()))?;
+        let n = self.chunk_count() as usize;
+        let per_chunk = super::par_map(n, self.threads, |i| {
+            let rel = self.info.chunk_path(group, i as u64);
+            let full = io::resolve_chunk(self.base_dir.join(&rel), &group.file_type)
+                .ok_or(GraphArError::ChunkOutOfRange(i as u64, n as u64))?;
+            io::read_chunk_columns(&full, &group.file_type, &[property_name])
+        })?;
+        Ok(per_chunk.into_iter().flatten().collect())
+    }
+
     /// Read chunks for the property group containing the named property.
     pub fn read_by_property(&self, property_name: &str) -> Result<Vec<RecordBatch>> {
         let group = self

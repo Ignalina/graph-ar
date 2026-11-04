@@ -60,6 +60,50 @@ use serde_json::{Value, json};
 
 type R<T> = Result<T, Box<dyn std::error::Error>>;
 
+#[cfg(feature = "count-alloc")]
+mod counting {
+    use std::{
+        alloc::{GlobalAlloc, Layout, System},
+        sync::atomic::{AtomicU64, Ordering::Relaxed},
+    };
+
+    pub static ALLOCS: AtomicU64 = AtomicU64::new(0);
+    pub static BYTES: AtomicU64 = AtomicU64::new(0);
+
+    pub struct Counting;
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            ALLOCS.fetch_add(1, Relaxed);
+            BYTES.fetch_add(l.size() as u64, Relaxed);
+            unsafe { System.alloc(l) }
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            unsafe { System.dealloc(p, l) }
+        }
+        unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+            ALLOCS.fetch_add(1, Relaxed);
+            BYTES.fetch_add(n.saturating_sub(l.size()) as u64, Relaxed);
+            unsafe { System.realloc(p, l, n) }
+        }
+    }
+}
+
+#[cfg(feature = "count-alloc")]
+#[global_allocator]
+static GLOBAL: counting::Counting = counting::Counting;
+
+/// Allocations and bytes so far; (0, 0) without the `count-alloc` feature.
+fn alloc_counters() -> (u64, u64) {
+    #[cfg(feature = "count-alloc")]
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        return (counting::ALLOCS.load(Relaxed), counting::BYTES.load(Relaxed));
+    }
+    #[allow(unreachable_code)]
+    (0, 0)
+}
+
 const IMPL: &str = "graphar-native";
 
 fn main() -> R<()> {
@@ -80,10 +124,13 @@ fn main() -> R<()> {
 }
 
 fn emit(op: &str, secs: f64, check: Value) {
-    println!(
-        "{}",
-        json!({ "impl": IMPL, "op": op, "secs": secs, "check": check })
-    );
+    let (allocs, bytes) = alloc_counters();
+    let mut row = json!({ "impl": IMPL, "op": op, "secs": secs, "check": check });
+    if allocs > 0 {
+        row["allocs"] = json!(allocs);
+        row["alloc_bytes"] = json!(bytes);
+    }
+    println!("{row}");
 }
 
 // ---------------------------------------------------------------- input files

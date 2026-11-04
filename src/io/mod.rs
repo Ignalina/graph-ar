@@ -44,6 +44,34 @@ pub fn read_chunk_typed(
     format_for(file_type)?.read_chunk(path.as_ref(), Some(declared))
 }
 
+/// A whole chunk with only the named `columns`. Parquet decodes just those;
+/// the other formats read the chunk and project it, so the result is the same
+/// and only the cost differs.
+pub fn read_chunk_columns(
+    path: impl AsRef<Path>,
+    file_type: &FileType,
+    columns: &[&str],
+) -> Result<Vec<RecordBatch>> {
+    if let FileType::Parquet = file_type {
+        return parquet::read_columns(path, columns);
+    }
+    read_chunk(path, file_type)?
+        .iter()
+        .map(|b| {
+            let schema = b.schema();
+            let idx = columns
+                .iter()
+                .map(|c| {
+                    schema
+                        .index_of(c)
+                        .map_err(|_| crate::error::GraphArError::PropertyNotFound((*c).to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(b.project(&idx)?)
+        })
+        .collect()
+}
+
 /// `batches` with the columns named in `declared` cast to the declared types.
 #[cfg_attr(not(feature = "orc"), allow(dead_code))]
 pub(crate) fn cast_all(

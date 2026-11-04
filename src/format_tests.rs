@@ -228,8 +228,8 @@ mod read_path {
     use tempfile::tempdir;
 
     use crate::{
-        AdjListInfo, AdjListType, DST_INDEX_COL, EdgeInfo, EdgeReader, FileType, SRC_INDEX_COL,
-        io, write_edge_table,
+        AdjListInfo, AdjListType, DST_INDEX_COL, EdgeInfo, EdgeReader, FileType, SRC_INDEX_COL, io,
+        write_edge_table,
     };
 
     fn edges(m: i64) -> RecordBatch {
@@ -270,6 +270,28 @@ mod read_path {
     }
 
     #[test]
+    fn read_property_returns_only_that_column() {
+        use crate::{
+            DataType, Property, PropertyGroup, VertexInfo, VertexReader, write_vertex_table,
+        };
+        let dir = tempdir().unwrap();
+        let vi = VertexInfo::new("v", 4).with_property_group(PropertyGroup::new(
+            vec![
+                Property::new(SRC_INDEX_COL, DataType::Int64),
+                Property::new(DST_INDEX_COL, DataType::Int64),
+            ],
+            FileType::Parquet,
+        ));
+        write_vertex_table(&vi, dir.path(), &edges(10)).unwrap();
+        let b = VertexReader::open(vi, dir.path())
+            .unwrap()
+            .read_property(DST_INDEX_COL)
+            .unwrap();
+        assert_eq!(b.iter().map(|b| b.num_rows()).sum::<usize>(), 10);
+        assert!(b.iter().all(|b| b.num_columns() == 1));
+    }
+
+    #[test]
     fn read_csr_is_unchanged_by_the_projection() {
         let dir = tempdir().unwrap();
         let base = dir.path();
@@ -281,7 +303,10 @@ mod read_path {
         });
         let t = AdjListType::OrderedBySource;
         write_edge_table(&ei, base, &t, &edges(1000), 100).unwrap();
-        let (offsets, indices) = EdgeReader::open(ei, base, &t).unwrap().read_csr(&t).unwrap();
+        let (offsets, indices) = EdgeReader::open(ei, base, &t)
+            .unwrap()
+            .read_csr(&t)
+            .unwrap();
         assert_eq!(offsets.len(), 101);
         assert_eq!(indices.len(), 1000);
         // Row v holds the edges e with e % 100 == v; dst is 7v mod 100.
