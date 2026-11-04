@@ -23,7 +23,7 @@ How the hot paths work, what they cost, and what was measured. Every
 number here comes from `bench/perf/src/main.rs` driven by `bench/perf/run.sh`
 (one process per stage, so peak RSS and bytes read are per stage), on
 one host (AMD Threadripper PRO 3975WX, 32 cores, 499 GB RAM, Linux 7.0),
-**2026-11-04**, `--release`, Rust 1.97.1 in the `nordisk-cargo-toolchain:ci4`
+**2026-11-04**, `--release`, Rust 1.97.1 in a
 container. The host carried a load of 25-45 from other jobs during the
 runs, so parallel figures are conservative; single-thread figures repeated
 within a few percent. The page cache was warm (`read_bytes` 0): the numbers
