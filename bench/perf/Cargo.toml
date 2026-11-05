@@ -27,11 +27,9 @@ publish = false
 [workspace]
 
 [dependencies]
-arrow = "59"
 arrow-array = "59"
 arrow-schema = "59"
 bytes = "1"
 graphar = { path = "../.." }
 memmap2 = "0.9"
-parquet = { version = "59", features = ["arrow"] }
 znippy-zoomies = { version = "0.1.26", default-features = false }
