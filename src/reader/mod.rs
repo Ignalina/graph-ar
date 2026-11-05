@@ -54,7 +54,8 @@ where
         return (0..n).map(&f).collect();
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let slots: Vec<std::sync::Mutex<Slot<T>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    let slots: Vec<std::sync::Mutex<Slot<T>>> =
+        (0..n).map(|_| std::sync::Mutex::new(None)).collect();
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
