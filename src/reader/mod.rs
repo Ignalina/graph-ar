@@ -30,10 +30,14 @@ pub const DEFAULT_MAX_THREADS: usize = 8;
 /// available parallelism capped at [`DEFAULT_MAX_THREADS`], and at `n`),
 /// results in index order.
 ///
-/// Chunk decoding is CPU-bound and chunks are independent, so this is a plain
-/// scoped fan-out: thread t takes the indices `t, t + threads, ...`. No pool,
-/// no work stealing, nothing shared but the input. Errors are returned in
-/// index order too (the first failing index wins), after all threads joined.
+/// Chunk decoding is CPU-bound and chunks are independent, but not equal:
+/// string chunks and the last, short chunk of each partition differ in cost.
+/// So the threads take the next index from a shared counter instead of a
+/// fixed stride; the run ends at max over threads of the work they took,
+/// which with dynamic claiming is at most (total / T) + one chunk. No pool, no
+/// work stealing, nothing shared but the counter and the input. Errors come
+/// back in index order too (the first failing index wins), after all threads
+/// joined.
 pub(crate) fn par_map<T: Send, F>(n: usize, threads: Option<usize>, f: F) -> crate::Result<Vec<T>>
 where
     F: Fn(usize) -> crate::Result<T> + Sync,
@@ -49,25 +53,29 @@ where
     if threads == 1 || n <= 1 {
         return (0..n).map(&f).collect();
     }
-    // One slot per index; thread t fills the slots t, t + threads, ...
-    let mut slots: Vec<Slot<T>> = (0..n).map(|_| None).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Slot<T>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
     std::thread::scope(|scope| {
-        let mut lanes: Vec<Vec<(usize, &mut Slot<T>)>> = (0..threads).map(|_| Vec::new()).collect();
-        for (i, slot) in slots.iter_mut().enumerate() {
-            lanes[i % threads].push((i, slot));
-        }
-        for lane in lanes {
-            let f = &f;
-            scope.spawn(move || {
-                for (i, slot) in lane {
-                    *slot = Some(f(i));
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= n {
+                        break;
+                    }
+                    let r = f(i);
+                    *slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
                 }
             });
         }
     });
     slots
         .into_iter()
-        .map(|s| s.expect("every slot filled"))
+        .map(|s| {
+            s.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .expect("every slot filled")
+        })
         .collect()
 }
 

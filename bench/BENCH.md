@@ -78,7 +78,6 @@ Native after (`2d757cb`) against C++ on the native-written Parquet graph, median
 | parquet | 35.8 + 24.5 MB | 15.2 + 7.3 MB | 35.9 + 24.6 MB |
 | csv | 555.3 + 140.5 MB | 555.3 + 140.5 MB | 582.7 + 151.1 MB |
 | orc | 461.1 + 55.4 MB | 461.1 + 55.4 MB | 16.0 + 14.8 MB |
-| arrow | 622.5 + 190.8 MB | 622.5 + 190.8 MB | - |
 
 The C++ writers write Parquet uncompressed unless `WriterOptions` are passed, so the harness passes ZSTD. The "after" Parquet files are 63 % smaller than the C++ ones because the native writer uses DELTA_BINARY_PACKED for the integer columns; C++ reads them with the same answers.
 
@@ -143,18 +142,6 @@ ORC:
 | read a property group | 192 ms | 194 ms | 406 ms | 402 ms | - |
 | adjacency list to CSR | 186 ms | 181 ms | 145 ms | 146 ms | - |
 | full scan | 963 ms | 901 ms | 1.09 s | 1.08 s | - |
-
-Arrow IPC (native only, not in the upstream `FileType` set):
-
-| operation | native before | native after | C++ (run 1) | C++ (run 2) | graphar-rs |
-|---|---:|---:|---:|---:|---:|
-| write vertices, table API | 114 ms | 115 ms | - | - | - |
-| write edges, table API | 421 ms | 178 ms | - | - | - |
-| write vertices, row builder | 6.93 s | 3.25 s | - | - | - |
-| write edges, row builder | 5.64 s | 2.29 s | - | - | - |
-| read a property group | 103 ms | 21 ms | - | - | - |
-| adjacency list to CSR | 83 ms | 62 ms | - | - | - |
-| full scan | 443 ms | 151 ms | - | - | - |
 
 The C++ CSV full scan is `-` because it fails, see finding 5.
 
@@ -229,7 +216,6 @@ What the crate does not support yet:
 | High-level collections and iterators | not implemented; readers return Arrow batches |
 | Info files on object stores | local only; chunks work through `ChunkStore` |
 | Object store path of the readers | `VertexReader` and `EdgeReader` are local; `ChunkStore` reads and writes chunks |
-| Arrow IPC | supported here, outside the spec's `FileType` |
 | Object store timing | not measured |
 
 ## Findings in the C++ library
@@ -243,6 +229,10 @@ What the crate does not support yet:
 7. The table writer pads the last offset chunk to `chunk_size + 1` rows; Spark writes `vertex_count + 1`. The native reader accepts both.
 8. The YAML reader rejects `prefix: ''` and block sequences that are not indented. The native crate now writes the upstream style.
 9. GraphAr C++ at `06dddb1` does not build against Arrow 22 (`ReadTable` API) and did not link against the Arrow 26.0.1 apt packages (undefined `arrow::fs::InitializeS3`). We used Arrow 24.0.0.
+
+## Extension formats
+
+The crate carries only the GraphAr spec's formats. Arrow IPC, which earlier runs here also measured, now lives in a crate of our own behind the `PayloadFormat` trait; it is not part of the donation and could be offered upstream later as a separate proposal. `raw-summary.md` still has the Arrow IPC rows of those earlier runs.
 
 ## Method
 

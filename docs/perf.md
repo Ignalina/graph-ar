@@ -253,9 +253,10 @@ vertices: `8·V` bytes of offsets plus footers. 70 µs → 26 µs per lookup.
 ### 5. Parallel chunk decode (`reader::par_map`)
 
 Chunk files are independent, so multi-chunk reads fan out over scoped
-`std::thread`s: thread `t` of `T` decodes chunk indices `t, t+T, t+2T, …`,
+`std::thread`s that take the next chunk index from a shared counter (until
+`c8bea34` a fixed stride, `t, t+T, t+2T, …`; see "Decode engine" below);
 results land in index order. No pool, no rayon, nothing shared but the
-inputs. `T = min(available cores, 8, chunks)`; the readers' `with_threads(n)`
+counter and the inputs. `T = min(available cores, 8, chunks)`; the readers' `with_threads(n)`
 overrides it (`1` = serial).
 
 Measured at 100M edges on the earlier main (load 30-45 on the host):
@@ -283,6 +284,99 @@ property test `parallel_reads_match_serial` pins parallel to serial.
   the fastest of the three at 10M (65 / 89 / 75 ms). Not worth an `unsafe`
   and a dependency in the library; the bench stages stay as the record.
 - **Smaller data pages**: see the table under 2.
+
+## Copies and allocations on the Parquet read path
+
+Measured on the 3.1M-vertex, 4.2M-edge code graph (Parquet, ZSTD), one
+process per run, median of 7, a counting global allocator in
+`bench/rust` (`--features count-alloc`) for the counts. "Before" is main
+`7ab4db1`, "after" `c8bea34`. The checks (row counts and column sums) are
+identical before and after.
+
+| read | allocations before | after | time, 1 thread, before | after | 8 threads, before | after |
+|---|---:|---:|---:|---:|---:|---:|
+| one property (`read-prop`, a 3-column group) | 204 482 | 7 390 | 110 ms | 88 ms | 62 ms | 20 ms |
+| adjacency list to CSR (`read-csr`) | 82 386 | 4 775 | 64 ms | 46 ms | 61 ms | 38 ms |
+| every column (`scan`) | 528 926 | 25 235 | 364 ms | 311 ms | 343 ms | 148 ms |
+
+What changed:
+
+1. **One batch per chunk.** The parquet reader's default is 1024 rows per
+   batch, so a chunk of `r` rows and `c` columns came back as `r / 1024`
+   batches, with `c` buffers each plus their array headers. A whole-chunk
+   read now asks for `min(r, 2^20)` rows per batch: `c` buffers per chunk. On
+   this graph that is the 17x to 28x drop in allocation count.
+2. **Projection.** `io::read_chunk_columns` and `VertexReader::read_property`
+   decode only the named columns; `read_csr` decodes only the far endpoint of
+   each edge, not both. Unread columns cost their footer entry, nothing more.
+3. **One copy into the CSR.** Offsets go from the Arrow buffer straight into
+   the CSR array, without the intermediate `Vec` per chunk.
+
+Allocated bytes went up for `read-prop` and `scan` (186 to 260 MB, 1.37 to
+1.75 GB): one batch per chunk means the decoder sizes each buffer for the
+whole chunk and grows it, where 1024-row batches reused small ones. The
+counter adds the growth of a `realloc` and does not subtract frees, so these
+are bytes requested, not peak memory.
+
+### What a byte costs
+
+Per column chunk of `c` compressed bytes that decode to `u` bytes of Arrow
+data:
+
+```
+page cache ──read──▶ c bytes ──ZSTD──▶ u bytes ──decode──▶ Arrow buffer (u bytes)
+            copy 1                 copy 2           copy 3 (plain), or
+                                                    a rebuild (delta, dictionary, strings)
+```
+
+So a Parquet byte is written about `c/u + 2` times: once by the read (of the
+compressed bytes), once by the decompressor, once by the decoder. The decoder
+step is not a copy for delta-packed integers or dictionary strings; it
+computes the values. None of these steps can be skipped while the chunk is
+compressed and encoded: **Parquet cannot be zero-copy.** The closest it gets
+is an uncompressed, plain-encoded, fixed-width column, where the decoder
+could hand out the page bytes as the Arrow buffer; the parquet crate does
+not do that today, and it would give up the 63 % size saving of ZSTD with
+delta packing.
+
+Zero-copy is possible with Arrow IPC, uncompressed: the file is the Arrow
+buffers. Read through a file handle it costs one copy (copy 1); memory-mapped
+and decoded in place, none. Arrow IPC is outside the GraphAr spec, so it is
+not in this crate; it plugs in through `PayloadFormat` (our own crate
+implements it), where an mmap read is the next step.
+
+## Decode engine: shared counter against a fixed stride
+
+`reader::par_map` used a fixed stride: thread `t` decoded chunks `t, t + T,
+...`. With chunks of unequal cost (string groups, the short last chunk of a
+partition) a stride finishes at the slowest thread's share. Taking the next
+chunk from a shared counter ends at `total / T` plus at most one chunk.
+
+Same files, same decode, three engines (`bench/rust`, `engine-scan`): the old
+stride, the std counter now in `par_map`, and the fork-join pool of the
+`rotaryengine` crate (`gatling_for_each`, the same claiming done by a
+dedicated pool). Median of 7, wall time to decode every chunk file:
+
+| graph | files | threads | stride | counter (std) | gatling |
+|---|---:|---:|---:|---:|---:|
+| code graph, 20 MB, 17.7M rows | 60 | 4 | 109 ms | 106 ms | 95 ms |
+| | | 8 | 78 ms | 72 ms | 69 ms |
+| | | 16 | 92 ms | 98 ms | 114 ms |
+| synthetic, 240 MB, 120M rows | 156 | 4 | 207 ms | 187 ms | 184 ms |
+| | | 8 | 154 ms | 135 ms | 151 ms |
+| | | 16 | 269 ms | 223 ms | 230 ms |
+
+The synthetic graph is 10M vertices and 50M power-law edges
+(`prep-synth 10000000 50000000`). The host had a load of 22 to 27 from other
+jobs and only 16 cores, so 16 threads compete with them and differences under
+about 10 % are noise.
+
+Reading it: claiming chunks from a counter beats the stride by 5 to 17 % on
+the large graph and is a wash on the small one. The gatling pool and the
+plain std counter are the same within the noise: the gain is the scheduling,
+not the engine. `par_map` now uses the counter, so the crate gets the gain
+with no dependency. A pool would pay off only where threads are spawned for
+many short calls (it keeps them warm); one scan spawns at most 8 threads once.
 
 ## The static search tree (Ragnar Groot Koerkamp's S+ tree)
 

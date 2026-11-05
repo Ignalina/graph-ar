@@ -48,7 +48,7 @@ An input dir holds `vertices.parquet`, `edges.parquet` (with
 
 ```shell
 graphar-bench prep-gar data/ldbc-input testing/ldbc_sample/parquet/ldbc_sample.graph.yml person person knows person
-graphar-bench prep-mimir data/mimir-input <dump-dir>...     # rustc graph dumps (Arrow IPC)
+graphar-bench prep-mimir data/mimir-input <dump-dir>...     # rustc graph dumps (Arrow IPC files)
 for f in parquet csv orc arrow; do graphar-bench info data/ldbc-input $f data/ldbc-info-$f; done
 ```
 

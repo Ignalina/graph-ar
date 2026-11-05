@@ -119,6 +119,8 @@ fn main() -> R<()> {
         "read-csr" => read_csr(Path::new(a(1))),
         "scan" => scan(Path::new(a(1))),
         "conform" => conform(Path::new(a(1))),
+        "engine-scan" => engine_scan(Path::new(a(1)), a(2), a(3).parse().unwrap_or(8)),
+        "prep-synth" => prep_synth(Path::new(a(1)), a(2).parse()?, a(3).parse()?),
         other => Err(format!("unknown command `{other}`").into()),
     }
 }
@@ -921,4 +923,147 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
             }
         }
     }
+}
+
+// ------------------------------------------------------------ engine trial
+
+/// Every chunk file of the graph (vertex groups, adjacency list, edge groups)
+/// with its format.
+fn chunk_files(dir: &Path) -> R<Vec<(PathBuf, FileType)>> {
+    let (vi, ei) = open_graph(dir)?;
+    let mut out = Vec::new();
+    let mut walk = |rel: PathBuf, ft: &FileType| -> R<()> {
+        let mut stack = vec![dir.join(rel)];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d)? {
+                let p = e?.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("chunk")) {
+                    out.push((p, ft.clone()));
+                }
+            }
+        }
+        Ok(())
+    };
+    for g in &vi.property_groups {
+        walk(PathBuf::from(&vi.prefix).join(g.dir_name()), &g.file_type)?;
+    }
+    let t = AdjListType::OrderedBySource;
+    let adj = ei.get_adj_list_info(&t).ok_or("no ordered_by_source")?;
+    walk(PathBuf::from(&ei.prefix).join(t.dir_name()).join("adj_list"), &adj.file_type)?;
+    for g in &ei.property_groups {
+        walk(PathBuf::from(&ei.prefix).join(t.dir_name()).join(g.dir_name()), &g.file_type)?;
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+/// Decode every chunk file of a graph on one engine: `static` (graph-ar's
+/// scoped threads, thread t takes files t, t + T, ...) or `gatling` (workers
+/// take the next file from a shared counter). Same decode either way.
+fn engine_scan(dir: &Path, engine: &str, threads: usize) -> R<()> {
+    let files = chunk_files(dir)?;
+    let decode = |i: usize| -> u64 {
+        let (p, ft) = &files[i];
+        graphar::io::read_chunk(p, ft)
+            .map(|bs| bs.iter().map(|b| b.num_rows() as u64).sum())
+            .unwrap_or(u64::MAX)
+    };
+    let start = Instant::now();
+    let rows: Vec<u64> = match engine {
+        "static" => {
+            let mut slots = vec![0u64; files.len()];
+            let t = threads.clamp(1, files.len().max(1));
+            std::thread::scope(|s| {
+                let mut lanes: Vec<Vec<(usize, &mut u64)>> = (0..t).map(|_| Vec::new()).collect();
+                for (i, slot) in slots.iter_mut().enumerate() {
+                    lanes[i % t].push((i, slot));
+                }
+                for lane in lanes {
+                    let decode = &decode;
+                    s.spawn(move || {
+                        for (i, slot) in lane {
+                            *slot = decode(i);
+                        }
+                    });
+                }
+            });
+            slots
+        }
+        "atomic" => {
+            // std only: workers take the next file from a shared counter.
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let slots: Vec<std::sync::atomic::AtomicU64> =
+                (0..files.len()).map(|_| std::sync::atomic::AtomicU64::new(0)).collect();
+            std::thread::scope(|s| {
+                for _ in 0..threads.clamp(1, files.len().max(1)) {
+                    s.spawn(|| loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if i >= files.len() {
+                            break;
+                        }
+                        slots[i].store(decode(i), std::sync::atomic::Ordering::Relaxed);
+                    });
+                }
+            });
+            slots.into_iter().map(|a| a.into_inner()).collect()
+        }
+        #[cfg(feature = "gatling")]
+        "gatling" => gatling::gatling_forkjoin::gatling_for_each(files.len(), threads, decode),
+        other => return Err(format!("engine {other} (gatling needs --features gatling)").into()),
+    };
+    let secs = start.elapsed().as_secs_f64();
+    if rows.contains(&u64::MAX) {
+        return Err("a chunk failed to decode".into());
+    }
+    let bytes: u64 = files.iter().map(|(p, _)| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).sum();
+    emit(
+        &format!("engine-{engine}"),
+        secs,
+        json!({ "files": files.len(), "rows": rows.iter().sum::<u64>(), "bytes": bytes, "threads": threads }),
+    );
+    Ok(())
+}
+
+/// A synthetic graph: `n` vertices (id, a name), `m` edges with a weight.
+fn prep_synth(out: &Path, n: i64, m: i64) -> R<()> {
+    std::fs::create_dir_all(out)?;
+    let vertices = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", ArrowDataType::Int64, false),
+            Field::new("name", ArrowDataType::Utf8, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..n)),
+            Arc::new(StringArray::from_iter_values((0..n).map(|i| format!("vertex {i}")))),
+        ],
+    )?;
+    // Power-law-ish destinations, sources spread evenly.
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let (mut src, mut dst, mut w) = (Vec::with_capacity(m as usize), Vec::with_capacity(m as usize), Vec::with_capacity(m as usize));
+    for _ in 0..m {
+        let u = (next() % 1_000_000) as f64 / 1_000_000.0;
+        src.push((next() % n as u64) as i64);
+        dst.push(((n as f64) * u * u * u) as i64);
+        w.push((next() % 1000) as i64);
+    }
+    let edges = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(SRC_INDEX_COL, ArrowDataType::Int64, false),
+            Field::new(DST_INDEX_COL, ArrowDataType::Int64, false),
+            Field::new("w", ArrowDataType::Int64, false),
+        ])),
+        vec![Arc::new(Int64Array::from(src)), Arc::new(Int64Array::from(dst)), Arc::new(Int64Array::from(w))],
+    )?;
+    write_parquet(&out.join("vertices.parquet"), &vertices)?;
+    write_parquet(&out.join("edges.parquet"), &edges)?;
+    write_schema(out, &vertices, &edges, ["node", "node", "edge", "node"], &[&["id"], &["name"]], &[&["w"]], [1 << 18, 1 << 22])?;
+    Ok(())
 }
