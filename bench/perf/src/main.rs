@@ -712,7 +712,7 @@ fn stree(a: &Args) {
             k >>= k.trailing_ones() + 1;
             acc2 = acc2.wrapping_add(k);
         }
-        let eyt = t.elapsed().as_nanos() as f64 / q as f64;
+        let eytz_ns = t.elapsed().as_nanos() as f64 / q as f64;
 
         let tb = Instant::now();
         let tree = STree64::new(&keys);
@@ -726,7 +726,7 @@ fn stree(a: &Args) {
         // the tree returns the index into `keys`; partition_point too
         assert_eq!(acc, acc3, "STree64 index != partition_point index");
         println!(
-            "ROW stree n={n}\tpartition_point {bs:.1} ns/op\teytzinger {eyt:.1} ns/op\tSTree64 {st:.1} ns/op (build {build_ms:.1} ms)\t(acc {acc} {acc2})"
+            "ROW stree n={n}\tpartition_point {bs:.1} ns/op\teytzinger {eytz_ns:.1} ns/op\tSTree64 {st:.1} ns/op (build {build_ms:.1} ms)\t(acc {acc} {acc2})"
         );
     }
 }
