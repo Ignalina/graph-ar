@@ -271,4 +271,4 @@ python3 summarize.py work/raw/after.jsonl
 
 Medians of every case: [raw-summary.md](raw-summary.md). The one-JSON-line-per-run files stay outside the repository.
 
-CI: `.github/workflows/rust.yml` has not run on a hosted runner; there is none for this repository, so its steps were run by hand in containers.
+CI: `.github/workflows/rust.yml` runs on GitHub's hosted runners in the test copy at https://github.com/Ignalina/graph-ar, and it is green.
