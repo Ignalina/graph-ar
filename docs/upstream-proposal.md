@@ -16,9 +16,10 @@ donate it under the Apache License 2.0. I offer to maintain it.
 
 The code is at https://www.gunnar.rs/nordisk/graph-ar (Apache-2.0, ASF
 headers). Clone it with `git clone ssh://anonymous@git.gunnar.rs:2222/nordisk/graph-ar`.
-It has a CI workflow modelled on `rust.yaml`, but that workflow has not run on
-a hosted runner yet: there is none for this repository, so its steps were run
-by hand in containers. It would first run for real in this project's CI.
+A GitHub copy at https://github.com/Ignalina/graph-ar runs its CI workflow
+(modelled on `rust.yaml`: license headers, typos, taplo, rustfmt, clippy,
+cargo-machete, cargo-deny, nextest with and without all features, doc tests,
+docs) on hosted runners; it is green.
 
 #### Motivation
 
